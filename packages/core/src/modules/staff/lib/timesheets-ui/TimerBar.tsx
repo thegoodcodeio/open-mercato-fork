@@ -33,7 +33,7 @@ type TimerMutationContext = {
   resourceKind: string
   resourceId: string
   staffMemberId: string | null
-  action: 'timer-create' | 'timer-start' | 'timer-stop'
+  action: 'timer-create' | 'timer-start' | 'timer-stop' | 'timer-notes'
   retryLastMutation: () => Promise<boolean>
 }
 
@@ -61,9 +61,11 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
 
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [description, setDescription] = useState('')
+  const [persistedDescription, setPersistedDescription] = useState('')
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [isStarting, setIsStarting] = useState(false)
   const [isStopping, setIsStopping] = useState(false)
+  const [isSavingDescription, setIsSavingDescription] = useState(false)
   const [showProjectDropdown, setShowProjectDropdown] = useState(false)
   const [projectFilter, setProjectFilter] = useState('')
 
@@ -106,7 +108,10 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
   useEffect(() => {
     if (activeTimer.running && activeTimer.startedAt) {
       startElapsedCounter(activeTimer.startedAt)
-      if (activeTimer.notes != null) setDescription(activeTimer.notes)
+      if (activeTimer.notes != null) {
+        setDescription(activeTimer.notes)
+        setPersistedDescription(activeTimer.notes)
+      }
       return
     }
     stopElapsedCounter()
@@ -160,6 +165,7 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
         mutationPayload: startPayload,
       })
 
+      setPersistedDescription(description)
       await activeTimer.refresh()
     } catch (err) {
       flash(
@@ -171,11 +177,52 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
     }
   }
 
+  const saveRunningDescription = useCallback(async () => {
+    if (!activeEntryId) return true
+
+    const normalizedDescription = description.trim()
+    const normalizedPersistedDescription = persistedDescription.trim()
+    if (normalizedDescription === normalizedPersistedDescription) return true
+
+    setIsSavingDescription(true)
+    try {
+      const notesPayload = { id: activeEntryId, notes: normalizedDescription || null }
+      await runMutation({
+        operation: () =>
+          apiCallOrThrow('/api/staff/timesheets/time-entries', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(notesPayload),
+          }),
+        context: {
+          formId: TIMER_MUTATION_CONTEXT_ID,
+          resourceKind: 'staff.timesheets.time_entry',
+          resourceId: activeEntryId,
+          staffMemberId,
+          action: 'timer-notes',
+          retryLastMutation,
+        },
+        mutationPayload: notesPayload,
+      })
+      setPersistedDescription(normalizedDescription)
+      return true
+    } catch (err) {
+      flash(
+        resolveTimerActionError(err, t('staff.timesheets.my.errors.save', 'Failed to save timesheets.')),
+        'error',
+      )
+      return false
+    } finally {
+      setIsSavingDescription(false)
+    }
+  }, [activeEntryId, description, persistedDescription, runMutation, staffMemberId, retryLastMutation, t])
+
   const handleStop = async () => {
     if (!activeEntryId) return
 
     setIsStopping(true)
     try {
+      await saveRunningDescription()
       const stopPayload = {
         id: activeEntryId,
         action: 'timer-stop',
@@ -198,7 +245,7 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
         mutationPayload: stopPayload,
       })
 
-      setDescription('')
+      setPersistedDescription(description.trim())
       await activeTimer.refresh()
       onTimerStopped()
     } catch (err) {
@@ -217,7 +264,18 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
         type="text"
         value={description}
         onChange={(e) => setDescription(e.target.value)}
-        readOnly={isRunning}
+        disabled={isSavingDescription}
+        onBlur={() => {
+          if (isRunning) {
+            void saveRunningDescription()
+          }
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && isRunning) {
+            event.preventDefault()
+            void saveRunningDescription()
+          }
+        }}
         placeholder={t(
           'staff.timesheets.my.timer.placeholder',
           'What are you working on?',
