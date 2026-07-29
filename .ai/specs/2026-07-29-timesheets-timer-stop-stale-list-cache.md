@@ -178,7 +178,7 @@ Two details are load-bearing and must not be dropped during implementation:
 | File | Change |
 |---|---|
 | `packages/core/src/modules/staff/data/validators.ts` | Add `staffTimeEntryStopTimerSchema` + inferred type. Scoped fields + `id: z.string().uuid()`. Mirror `staffTimeEntryStartTimerSchema` (line 294). |
-| `packages/core/src/modules/staff/commands/timesheets-entries.ts` | Add `stopTimerCommand` (`prepare` + `execute` + `buildLog` + `undo`); `registerCommand(stopTimerCommand)` next to the existing four registrations. |
+| `packages/core/src/modules/staff/commands/timesheets-entries.ts` | Add `stopTimerCommand` (`prepare` + `execute` + `buildLog` + `undo`); `registerCommand(stopTimerCommand)` next to the existing four registrations. Add `cacheAliases: ['staff.timesheet']` to `timeEntryCrudIndexer`. |
 | `packages/core/src/modules/staff/api/timesheets/time-entries/[id]/timer-stop/route.ts` | Replace the inline mutation with `commandBus.execute`, following `start-timer/route.ts`. Keep the mutation-guard wiring. |
 | `packages/core/src/modules/staff/api/timesheets/time-entries/__tests__/timer-segment-atomic-write.test.ts` | Rework — relocate the #2416 lock assertions to a command-level test (§ Rework). |
 | `packages/core/src/modules/staff/__integration__/TC-STAFF-029-timer-stop-list-cache-consistency.spec.ts` | New regression test with the pre-stop list GET. |
@@ -213,6 +213,20 @@ The business logic moves verbatim out of the route — do not rewrite it:
 - After the transaction: `emitCrudSideEffects({ action: 'updated', events: staffTimeEntryCrudEvents,
   indexer: timeEntryCrudIndexer, … })` — this is also what gets the entry reindexed, which the route
   never did.
+- **Add `cacheAliases: ['staff.timesheet']` to `timeEntryCrudIndexer`**
+  ([`timesheets-entries.ts:13`](../../packages/core/src/modules/staff/commands/timesheets-entries.ts:13)),
+  which currently declares only `entityType`. `packages/core/AGENTS.md` requires
+  `indexer: { entityType, cacheAliases }` in both `emitCrudSideEffects` and
+  `emitCrudUndoSideEffects`. This is a compliance fix, not the mechanism that closes #2609 — the
+  command bus already derives the same `staff.timesheet` alias from the command id — but it makes the
+  side-effect path carry the alias explicitly instead of relying on that derivation, and it covers
+  the undo path the same way. `cacheAliases` is a supported field on `CrudIndexerConfig`
+  ([`crud/types.ts:28`](../../packages/shared/src/lib/crud/types.ts:28)); `staff/commands/leave-requests.ts:53`
+  is an in-repo example.
+
+  Blast radius: `timeEntryCrudIndexer` is shared by the four existing time-entry commands
+  (create/start/update/delete), so they all gain the alias too. That is additive — a broader tag
+  flush, never a narrower one — but mention it in the PR description.
 - Keep the `emitStaffEvent('staff.timesheets.time_entry.timer_stopped', …, { persistent: true })`
   emit with its existing payload shape (event ids are a frozen contract surface).
 - `buildLog` as described in § How invalidation will reach the right tags.
@@ -245,8 +259,20 @@ back door.
 running again — but the staff member may have started another timer in the meantime, and both
 `start-timer` paths enforce "at most one running entry per staff member". Under the lock, re-check
 for another entry with `startedAt != null, endedAt: null, deletedAt: null` for the same
-`staffMemberId`; if one exists, **refuse the undo** with `409` and the existing
-`staff.timesheets.errors.timerAlreadyRunning` key rather than creating a second running timer.
+`staffMemberId`; if one exists, **refuse the undo** rather than creating a second running timer —
+throw `CrudHttpError(409, …)` with the existing `staff.timesheets.errors.timerAlreadyRunning` key.
+
+**The `409` is internal only; the public undo API still answers `400`.** The shared undo endpoint
+wraps `commandBus.undo` in a `try/catch` that swallows the error and returns a fixed
+`{ error: 'Undo failed' }` at status `400`
+([undo route line 122](../../packages/core/src/modules/audit_logs/api/audit-logs/actions/undo/route.ts:122)),
+so the `CrudHttpError` status never reaches the caller. Use `409` anyway — it is the correct internal
+signal, it is what the command's unit test asserts, and it is what would surface if the endpoint
+later learns to preserve `CrudHttpError` statuses.
+
+Do **not** change that endpoint as part of this work: it is shared by every undoable command in the
+platform, so altering its error contract is a separate, wider change needing its own spec. If the
+opaque `400` proves to be a real UX problem for this flow, file it as a follow-up.
 
 Finish with `emitCrudUndoSideEffects({ action: 'updated', events: staffTimeEntryCrudEvents, indexer:
 timeEntryCrudIndexer, … })`, matching `updateTimeEntryCommand.undo`.
@@ -280,7 +306,7 @@ Do not move them into the command and do not drop the `afterSuccessCallbacks` lo
 | Missing scope / generic failure | `400` `{ error }` (`staff.timesheets.errors.timerStop`) |
 | Guard block | `guardResult.errorStatus ?? 422` with `guardResult.errorBody` |
 | Route metadata | `requireAuth: true`, `requireFeatures: ['staff.timesheets.manage_own']` |
-| `openApi` export | Keep, updated for the added `x-om-operation` response header |
+| `openApi` export | Keep as-is. Do **not** try to document the `x-om-operation` response header — `OpenApiResponseDoc` has no `headers` field ([openapi/types.ts:13](../../packages/shared/src/lib/openapi/types.ts:13)); the `headers` on `OpenApiMethodDoc` describes *request* headers. Documenting response headers would require extending the shared OpenAPI model, which is out of scope. `start-timer` sets the same header undocumented today. |
 
 Additive only: the `x-om-operation` header (undo token) appears on success, matching `start-timer`.
 
@@ -301,7 +327,8 @@ on its own: its own route, its own command, its own regression test.
 
 1. Add `staffTimeEntryStopTimerSchema` to `data/validators.ts`.
 2. Add `stopTimerCommand` (with `prepare`, `buildLog` and the transactional `undo`) to
-   `commands/timesheets-entries.ts` and register it.
+   `commands/timesheets-entries.ts` and register it. Add `cacheAliases: ['staff.timesheet']` to
+   `timeEntryCrudIndexer` in the same file.
 3. Rewrite `[id]/timer-stop/route.ts` as a delegating route, keeping the mutation-guard wiring and
    the response/status contract.
 4. Add the audit label translation key.
@@ -451,4 +478,5 @@ was never going to catch it.
 | Date | Change |
 |---|---|
 | 2026-07-29 | Spec created. Root cause verified live on the ephemeral env (repro + control). Scope narrowed from four routes to two after confirming the segment routes do not mutate the parent entry. |
+| 2026-07-29 | Second review pass: (1) clarified that the undo `409` is internal only — the shared undo endpoint returns a fixed `400`, and changing it is out of scope; (2) dropped the "document `x-om-operation` in `openApi`" requirement — `OpenApiResponseDoc` has no response-header field, the header stays additive and undocumented as `start-timer`'s already is; (3) added `cacheAliases: ['staff.timesheet']` to `timeEntryCrudIndexer` for command-side-effect compliance, with its shared blast radius noted. |
 | 2026-07-29 | Review fixes: (1) ownership stays owner-only — the `manage_all` bypass copied from the sibling commands would have widened authorization, now explicitly out of scope; (2) undo respecified with a `prepare` before-snapshot (entry + active-segment identity), a locked transaction, and `409` handling for the #2855 single-active-timer invariant; (3) `[id]/timer-start` moved out of scope to its own follow-up, since this test plan does not prove its cache fix; (4) `timer-segment-atomic-write.test.ts` rework specified — its #2416 lock assertions must move to a command-level test, not be patched green at the route. |
