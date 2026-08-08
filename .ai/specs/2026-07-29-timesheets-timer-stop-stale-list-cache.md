@@ -1,6 +1,6 @@
 # Timesheets timer writes bypass the command bus and leave the CRUD list cache stale
 
-- **Status**: Draft — ready to implement
+- **Status**: Implemented — verified (unit + build gate green; integration confirmed fail-before / pass-after)
 - **Date**: 2026-07-29
 - **Upstream issue**: [open-mercato/open-mercato#2609](https://github.com/open-mercato/open-mercato/issues/2609) (`bug`, `priority-high`, unassigned)
 - **Umbrella**: upstream #2456 (Timesheets manual QA)
@@ -473,10 +473,116 @@ Upstream #2609 lives in `open-mercato/open-mercato`; this PR targets the fork br
 "doesn't reproduce" thread is resolved, and reference the control run — it explains why TC-STAFF-011
 was never going to catch it.
 
+## Implementation Status
+
+| Step | Status | Date | Notes |
+|---|---|---|---|
+| 1 — `staffTimeEntryStopTimerSchema` | Done | 2026-07-29 | `data/validators.ts`; scoped create fields + `id` |
+| 2 — `stopTimerCommand` + `cacheAliases` | Done | 2026-07-29 | `commands/timesheets-entries.ts`; registered next to the existing four |
+| 3 — Delegating `timer-stop` route | Done | 2026-07-29 | Guards kept in the route, around `commandBus.execute` |
+| 4 — Audit label translation | Done | 2026-07-29 | `staff.audit.timesheets.time_entries.stopTimer` in en/de/es/pl |
+| 5 — Unit coverage rework | Done | 2026-07-29 | Route-delegation + command lock/undo tests; #2416 gate relocated |
+| 6 — `TC-STAFF-029` + `TC-STAFF-011` pre-stop GET | Done | 2026-07-29 | Both fail pre-fix, pass post-fix on the ephemeral env |
+
+### Deliberate implementation decisions
+
+**Undo's before-state is captured inside `execute`, under the lock — not in `prepare`.**
+`prepare` still runs and supplies the entry-level `snapshotBefore` for the audit log as the spec
+requires, but it executes *outside* the transaction, so a segment identity read there is
+inherently racy: a `POST .../segments` landing between `prepare` and `execute` would make
+`prepare` record a segment that `execute` never closed, and undo would reopen the wrong row.
+`execute` therefore captures `endedAt`, `durationMinutes`, `updatedAt` and the active segment's
+id/`endedAt` after taking the `PESSIMISTIC_WRITE` lock and returns them on its result, which
+`buildLog` folds into the undo payload. This is strictly stronger than the spec's shape; the
+recorded segment is provably the one that was closed. The command result is
+`{ timeEntryId, durationMinutes, undoState }` — the route reads only `durationMinutes`, so the
+`{ ok, durationMinutes }` response body is unchanged.
+
+**Guard ordering shifted.** The old route resolved the entry (404) and checked ownership (403)
+*before* running the mutation guards; the entry lookup now lives in the command, so guards run
+first. A blocking guard on a non-existent entry therefore answers with the guard's status rather
+than `404`. No documented contract covers that ordering, and the spec requires the guards to wrap
+`commandBus.execute`.
+
+**Scope-error message key preserved.** `parseScopedCommandInput` defaults to
+`errors.tenant_required` / `errors.organization_required`; both are overridden to
+`staff.errors.missingScope` so the 400 body keeps the message it had before the refactor.
+
+### Verification
+
+`yarn generate`, `yarn build:packages`, `yarn typecheck`, `yarn lint` (0 errors) and the staff unit
+suites all pass. Two full-monorepo `yarn test` runs each hit one flaky `SIGSEGV` jest-worker crash —
+`@open-mercato/app` `bootstrap.test.ts` on the first run, `@open-mercato/ai-assistant` on the second —
+and both suites pass in isolation; neither touches staff. One genuine pre-existing failure is
+unrelated to this change: `packages/core/src/__tests__/explicit-sort-comparators.test.ts` flags
+`scripts/check-agents-md-budget.mjs:93`, a file this change does not touch.
+
+#### Integration: the "fails before the fix" gate is confirmed
+
+Both specs were run on 2026-07-29 against an ephemeral environment (`http://127.0.0.1:5001`) whose
+build predated the refactor — verified, not assumed: its server bundle contains
+`staff.timesheets.time_entries.start_timer` but no `…stop_timer`, so the requests hit the old
+hand-rolled route.
+
+| Spec | Result against pre-fix code |
+|---|---|
+| `TC-STAFF-029` | **FAIL** — `ended_at` is `null` in the list served from the cache key warmed before the stop |
+| `TC-STAFF-011` (with the new pre-stop GET) | **FAIL** — same assertion, at its own step 7 |
+
+This satisfies § Implementation steps 6 ("Confirm it fails before step 3") and independently
+confirms the § Why it looked unreproducible analysis: TC-STAFF-011 passed for months and now fails
+on the *identical* code, with the pre-stop list GET as the only difference. The test was
+structurally blind, not the bug absent.
+
+#### Integration: the fix is confirmed
+
+The environment was then rebuilt (fresh Postgres, full app rebuild) and came up on
+`http://127.0.0.1:49332`. Its bundle now contains `staff.timesheets.time_entries.stop_timer`,
+confirming the new command is the code under test.
+
+| Spec | Pre-fix build | Post-fix build |
+|---|---|---|
+| `TC-STAFF-029` | FAIL | **PASS** |
+| `TC-STAFF-011` (with the pre-stop GET) | FAIL | **PASS** |
+
+Same specs, same assertions, same warmed cache key — only the route implementation changed. That is
+the end-to-end proof that the command bus now invalidates the `staff.timesheet` tag the list route
+caches under, which no unit test can establish.
+
+#### Wider regression check — full `staff/__integration__` suite
+
+An initial run was blocked on a missing Chromium binary (Playwright 1.61.1 wanted build 1228, the
+cache held 1217). After `npx playwright install chromium`, the full folder ran with browsers:
+**43 passed, 3 failed**.
+
+| Spec | Verdict |
+|---|---|
+| `TC-STAFF-014` | Flake — failed under full-suite load, **passes** in isolation |
+| `TC-STAFF-027` | Pre-existing failure, unrelated to this change |
+| `TC-STAFF-028` | Pre-existing failure, unrelated to this change |
+
+The two reproducible failures are inherited from the timesheets-UX work that landed immediately
+before this branch, not regressions here. The handoff doc committed with them
+([`.ai/analysis/2026-07-27-timesheets-ux-handoff.md`](../analysis/2026-07-27-timesheets-ux-handoff.md)
+§ Verification status) states plainly: *"No integration tests were executed. `TC-STAFF-028` has not
+been run."* — and its next-steps list names `TC-STAFF-027` and `TC-STAFF-028` as specs still to be
+run and confirmed. Neither has ever been observed passing on this branch.
+
+Their failure modes are also outside this change's blast radius: `TC-STAFF-027` waits on a
+grid save-confirmation dialog that never renders, and `TC-STAFF-028`'s note edit goes through
+`PUT /api/staff/timesheets/time-entries` (the CRUD factory, which invalidates directly) — neither
+touches `timer-stop`. This change modifies **no `.tsx` file at all**.
+
+They should be triaged on their own issue; they are pre-existing debt this PR inherits rather than
+creates, and they should not gate it.
+
 ## Changelog
 
 | Date | Change |
 |---|---|
+| 2026-07-29 | Full staff integration suite run with browsers installed: 43 passed, 3 failed. `TC-STAFF-014` is a load flake (passes in isolation); `TC-STAFF-027` and `TC-STAFF-028` are pre-existing failures inherited from the preceding timesheets-UX commit, whose own handoff doc records them as never executed. |
+| 2026-07-29 | Integration verified end to end: `TC-STAFF-029` and the amended `TC-STAFF-011` both FAIL against a pre-fix build and PASS against the rebuilt one. |
+| 2026-07-29 | Implemented steps 1-6. Undo's before-state moved from `prepare` into `execute` under the lock (see § Deliberate implementation decisions); everything else follows the spec as written. |
 | 2026-07-29 | Spec created. Root cause verified live on the ephemeral env (repro + control). Scope narrowed from four routes to two after confirming the segment routes do not mutate the parent entry. |
 | 2026-07-29 | Second review pass: (1) clarified that the undo `409` is internal only — the shared undo endpoint returns a fixed `400`, and changing it is out of scope; (2) dropped the "document `x-om-operation` in `openApi`" requirement — `OpenApiResponseDoc` has no response-header field, the header stays additive and undocumented as `start-timer`'s already is; (3) added `cacheAliases: ['staff.timesheet']` to `timeEntryCrudIndexer` for command-side-effect compliance, with its shared blast radius noted. |
 | 2026-07-29 | Review fixes: (1) ownership stays owner-only — the `manage_all` bypass copied from the sibling commands would have widened authorization, now explicitly out of scope; (2) undo respecified with a `prepare` before-snapshot (entry + active-segment identity), a locked transaction, and `409` handling for the #2855 single-active-timer invariant; (3) `[id]/timer-start` moved out of scope to its own follow-up, since this test plan does not prove its cache fix; (4) `timer-segment-atomic-write.test.ts` rework specified — its #2416 lock assertions must move to a command-level test, not be patched green at the route. |

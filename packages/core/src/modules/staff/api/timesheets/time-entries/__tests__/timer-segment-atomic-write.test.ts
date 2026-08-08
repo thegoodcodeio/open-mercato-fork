@@ -232,60 +232,12 @@ describe('timer-start atomic write (#2416)', () => {
   })
 })
 
-describe('timer-stop atomic write (#2416)', () => {
-  function request() {
-    return new Request(`http://localhost/api/staff/timesheets/time-entries/${ENTRY_ID}/timer-stop`, {
-      method: 'POST',
-    })
-  }
-
-  test('stops the timer and recomputes duration inside a locking transaction', async () => {
-    mockFindOneWithDecryption.mockImplementation(async (_em, _cls, _where, opts) => {
-      if (opts) findOneOptions.push(opts)
-      return makeEntry({ startedAt: new Date('2026-01-01T08:00:00.000Z') })
-    })
-    mockFindWithDecryption.mockResolvedValue([
-      {
-        id: SEGMENT_ID,
-        segmentType: 'work',
-        startedAt: new Date('2026-01-01T08:00:00.000Z'),
-        endedAt: null,
-      },
-    ])
-
-    const { POST } = await import('../[id]/timer-stop/route')
-    const res = await POST(request())
-    const body = (await res.json()) as Record<string, unknown>
-
-    expect(res.status).toBe(200)
-    expect(typeof body.durationMinutes).toBe('number')
-    expect(transactionalCalls).toBe(1)
-    expect(lockOptionWasUsed()).toBe(true)
-    expect(lastTrxFlushCount).toBe(1)
-  })
-
-  test('returns 409 when no active segment is found under the lock', async () => {
-    mockFindOneWithDecryption.mockImplementation(async (_em, _cls, _where, opts) => {
-      if (opts) findOneOptions.push(opts)
-      return makeEntry({ startedAt: new Date('2026-01-01T08:00:00.000Z') })
-    })
-    mockFindWithDecryption.mockResolvedValue([
-      {
-        id: SEGMENT_ID,
-        segmentType: 'work',
-        startedAt: new Date('2026-01-01T08:00:00.000Z'),
-        endedAt: new Date('2026-01-01T09:00:00.000Z'),
-      },
-    ])
-
-    const { POST } = await import('../[id]/timer-stop/route')
-    const res = await POST(request())
-
-    expect(res.status).toBe(409)
-    expect(lockOptionWasUsed()).toBe(true)
-    expect(lastTrxFlushCount).toBe(0)
-  })
-})
+// timer-stop's #2416 lock coverage lives in
+// `commands/__tests__/timesheets-stop-timer.test.ts`. That route now delegates to
+// the `staff.timesheets.time_entries.stop_timer` command (#2609) and no longer
+// touches the ORM, so route-level lock assertions would prove nothing about
+// locking; the gate moved to where the transaction actually runs. The route's
+// own contract is covered by `timer-stop-route-delegation.test.ts`.
 
 describe('segment create atomic write (#2416)', () => {
   function request() {
