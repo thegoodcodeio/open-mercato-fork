@@ -557,9 +557,12 @@ cache held 1217). After `npx playwright install chromium`, the full folder ran w
 
 | Spec | Verdict |
 |---|---|
-| `TC-STAFF-014` | Flake — failed under full-suite load, **passes** in isolation |
+| `TC-STAFF-014` | Flake — failed under full-suite load, **passes** in isolation and did not recur |
 | `TC-STAFF-027` | Pre-existing failure, unrelated to this change |
 | `TC-STAFF-028` | Pre-existing failure, unrelated to this change |
+
+Final suite state after the separate `running=true` fix (below): **45 passed, 2 failed** —
+`TC-STAFF-027` and `TC-STAFF-028` only.
 
 The two reproducible failures are inherited from the timesheets-UX work that landed immediately
 before this branch, not regressions here. The handoff doc committed with them
@@ -576,10 +579,46 @@ touches `timer-stop`. This change modifies **no `.tsx` file at all**.
 They should be triaged on their own issue; they are pre-existing debt this PR inherits rather than
 creates, and they should not gate it.
 
+#### Separate defect found during manual QA — `running=true` matches zero rows
+
+Manual verification of this fix was blocked by an unrelated upstream bug: the TimerBar never
+left the "Start" state, so the stop flow could not be exercised by hand at all.
+
+Root cause: `buildTimeEntryListFilters` built the #3717 running-timer lookup as
+`{ started_at: { $ne: null }, ended_at: null }`. The query engine renders `$ne` as SQL `!=`
+and a bare value as `=`, so those became `started_at != NULL` / `ended_at = NULL` — both
+UNKNOWN in three-valued logic, matching **zero rows unconditionally**. Every surface that
+resolves the active timer through `useActiveTimesheetTimer` was therefore blind to running
+timers. The engine's `$exists` operator (`is not null` / `is null`) is the correct one.
+
+Fixed here as a **separate commit** — `{ $exists: true }` / `{ $exists: false }` — with
+`TC-STAFF-030-running-timer-lookup.spec.ts` as the execution-level gate (confirmed failing
+before the change, passing after) and a `nullSemanticsOf` assertion in the unit test that
+rejects any null-equality comparison. The two-line change is confined to one filter builder
+with a single call site; the shared query engine is untouched. Drafted for upstream report.
+
+Two things this investigation established that matter beyond the fix:
+
+- **The predicate was copied across an abstraction boundary where it changes meaning.**
+  `{ $ne: null }` is correct in the `start_timer` command because that runs through MikroORM
+  (`IS NOT NULL`); the list route runs through the query engine (`!= NULL`). Every other
+  `{ $ne: null }` in the repo is on the MikroORM path and is fine — this was the only
+  query-engine occurrence.
+- **`[id]/timer-start` really does leave the cache stale**, confirmed empirically while
+  debugging TC-STAFF-030: with a key warmed before the start, the warmed read returns
+  `total 0` while a cold key returns the entry. That is exactly the follow-up this spec
+  deferred in § Follow-ups, now with a reproduction. The UI is unaffected because TimerBar
+  starts through the command-backed atomic `/start-timer` route (#3311); only the legacy
+  per-entry route is affected.
+
+A predicted knock-on did **not** materialise: fixing the filter did not recover
+`TC-STAFF-028`, which fails identically afterwards. Its cause is still unidentified.
+
 ## Changelog
 
 | Date | Change |
 |---|---|
+| 2026-07-29 | Separate commit: fixed the `running=true` filter (`$exists` instead of null equality), added `TC-STAFF-030` as the execution-level gate, and empirically confirmed the deferred `[id]/timer-start` cache-staleness follow-up. Suite now 45 passed / 2 failed. |
 | 2026-07-29 | Full staff integration suite run with browsers installed: 43 passed, 3 failed. `TC-STAFF-014` is a load flake (passes in isolation); `TC-STAFF-027` and `TC-STAFF-028` are pre-existing failures inherited from the preceding timesheets-UX commit, whose own handoff doc records them as never executed. |
 | 2026-07-29 | Integration verified end to end: `TC-STAFF-029` and the amended `TC-STAFF-011` both FAIL against a pre-fix build and PASS against the rebuilt one. |
 | 2026-07-29 | Implemented steps 1-6. Undo's before-state moved from `prepare` into `execute` under the lock (see § Deliberate implementation decisions); everything else follows the spec as written. |

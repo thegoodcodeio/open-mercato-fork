@@ -57,8 +57,13 @@ export function buildTimeEntryListFilters(query: TimeEntryListFilterQuery): Reco
     filters[PROJECT_COLUMN] = query.projectId
   }
   if (parseBooleanToken(query.running ?? null) === true) {
-    filters[STARTED_AT_COLUMN] = { $ne: null }
-    filters[ENDED_AT_COLUMN] = null
+    // MUST be `$exists`, not `{ $ne: null }` / a bare `null`. The query engine
+    // maps `$ne` to SQL `!=` and a bare value to `=`, so those render as
+    // `started_at != NULL` / `ended_at = NULL` — both UNKNOWN in three-valued
+    // logic, so the filter matched zero rows and no running timer was ever
+    // found. `$exists` is the operator that emits `IS NOT NULL` / `IS NULL`.
+    filters[STARTED_AT_COLUMN] = { $exists: true }
+    filters[ENDED_AT_COLUMN] = { $exists: false }
   }
   return filters
 }
