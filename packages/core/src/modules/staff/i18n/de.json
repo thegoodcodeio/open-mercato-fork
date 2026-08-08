@@ -954,6 +954,7 @@
   "staff.timesheets.errors.staffMemberNotFound": "Mitarbeiter nicht gefunden oder nicht zugänglich.",
   "staff.timesheets.errors.timerAlreadyRunning": "Es läuft bereits ein anderer Timer. Stoppen Sie ihn, bevor Sie einen neuen starten.",
   "staff.timesheets.errors.timerAlreadyStarted": "Der Timer ist für diesen Eintrag bereits gestartet.",
+  "staff.timesheets.errors.timerAlreadyStopped": "Der Timer wurde für diesen Eintrag bereits gestoppt.",
   "staff.timesheets.errors.timerStart": "Timer konnte nicht gestartet werden.",
   "staff.timesheets.errors.timerStop": "Timer konnte nicht gestoppt werden.",
   "staff.timesheets.errors.updateMyProject": "Projektsichtbarkeit konnte nicht aktualisiert werden.",

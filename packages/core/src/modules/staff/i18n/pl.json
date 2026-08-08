@@ -954,6 +954,7 @@
   "staff.timesheets.errors.staffMemberNotFound": "Pracownik nie został znaleziony lub jest niedostępny.",
   "staff.timesheets.errors.timerAlreadyRunning": "Inny licznik czasu jest już uruchomiony. Zatrzymaj go przed rozpoczęciem nowego.",
   "staff.timesheets.errors.timerAlreadyStarted": "Czasomierz jest już uruchomiony dla tego wpisu.",
+  "staff.timesheets.errors.timerAlreadyStopped": "Czasomierz został już zatrzymany dla tego wpisu.",
   "staff.timesheets.errors.timerStart": "Nie udało się uruchomić czasomierza.",
   "staff.timesheets.errors.timerStop": "Nie udało się zatrzymać czasomierza.",
   "staff.timesheets.errors.updateMyProject": "Nie udało się zaktualizować widoczności projektu.",

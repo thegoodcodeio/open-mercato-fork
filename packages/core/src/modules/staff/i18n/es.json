@@ -954,6 +954,7 @@
   "staff.timesheets.errors.staffMemberNotFound": "Miembro del personal no encontrado o no accesible.",
   "staff.timesheets.errors.timerAlreadyRunning": "Ya hay otro temporizador en marcha. Detenlo antes de iniciar uno nuevo.",
   "staff.timesheets.errors.timerAlreadyStarted": "El temporizador ya está iniciado para este registro.",
+  "staff.timesheets.errors.timerAlreadyStopped": "El temporizador ya se ha detenido para este registro.",
   "staff.timesheets.errors.timerStart": "No se pudo iniciar el temporizador.",
   "staff.timesheets.errors.timerStop": "No se pudo detener el temporizador.",
   "staff.timesheets.errors.updateMyProject": "No se pudo actualizar la visibilidad del proyecto.",

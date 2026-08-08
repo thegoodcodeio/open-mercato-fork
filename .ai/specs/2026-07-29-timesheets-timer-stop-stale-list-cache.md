@@ -1,6 +1,6 @@
 # Timesheets timer writes bypass the command bus and leave the CRUD list cache stale
 
-- **Status**: Implemented — verified (unit + build gate green; integration confirmed fail-before / pass-after)
+- **Status**: Implemented — verified (unit + build gate green; integration confirmed fail-before / pass-after for the #2609 fix. `TC-STAFF-031`, added with the later `[id]/timer-start` conversion, has not been run yet.)
 - **Date**: 2026-07-29
 - **Upstream issue**: [open-mercato/open-mercato#2609](https://github.com/open-mercato/open-mercato/issues/2609) (`bug`, `priority-high`, unassigned)
 - **Umbrella**: upstream #2456 (Timesheets manual QA)
@@ -23,8 +23,10 @@ Two things this refactor must **not** do: widen authorization (the stop endpoint
 unlike the sibling commands it otherwise mirrors), and lose the #2416 locking guarantee that the
 current route-level unit test pins. Both are detailed below.
 
-`[id]/timer-start` has the same defect class and gets its own follow-up spec — proving its fix needs
-a regression test this plan does not include.
+`[id]/timer-start` has the same defect class. It was deferred while this plan was written, then
+fixed in the same branch as a third commit once the deferral was empirically confirmed and this
+spec's conversion existed as a template — `staff.timesheets.time_entries.start_timer_existing`, with
+`TC-STAFF-031` as the pre-*start* regression gate. See § Follow-ups.
 
 ## Problem Statement
 
@@ -335,19 +337,31 @@ on its own: its own route, its own command, its own regression test.
 5. Rework the unit coverage per § Testing (route-delegation test + command test).
 6. Add `TC-STAFF-029` (below). Confirm it fails before step 3 and passes after.
 
+### Follow-ups
+
+**`[id]/timer-start` — same defect class. Now fixed in this branch (third commit).**
+The route set `lockedEntry.startedAt` and `lockedEntry.source` on the entry row and never
+invalidated, so a list cached before a start kept showing the entry as not started.
+
+This was originally deferred to its own spec on the grounds that proving the cache fix needs its own
+regression test (a pre-*start* list GET) that this spec's test plan did not provide. That reason
+expired once the deferral was empirically confirmed (§ Separate defect found during manual QA) and
+`stopTimerCommand` plus `TC-STAFF-029` existed as templates: the remaining work was a mirror of an
+already-reviewed conversion, and `TC-STAFF-031` supplies the missing pre-start gate. The two `409`
+invariants — the already-started check and the single-active-timer check (#2855) — moved into the
+command with the rest of the logic.
+
+It is distinct from `start-timer/route.ts`: that one **creates and starts** a new entry (already
+command-backed); this one starts an **existing** entry. It therefore took its own command id,
+`staff.timesheets.time_entries.start_timer_existing`, rather than overloading `start_timer`.
+
+Undo differs from `startTimerCommand`'s in a way worth noting: that command creates the entry and so
+undoes by soft-deleting it, whereas this one only flips an entry that already existed, so undo
+restores the prior `startedAt`/`source` and soft-deletes the work segment the start opened. It
+refuses with `409` when the timer has since been stopped, because the stop's `endedAt` and
+`durationMinutes` were computed from the very segment undo would retire.
+
 ### Follow-ups — separate specs/issues, not this PR
-
-**`[id]/timer-start` — same defect class.** The route sets `lockedEntry.startedAt` and
-`lockedEntry.source` on the entry row and never invalidates, so a list cached before a start keeps
-showing the entry as not started. It warrants its own spec because it is a distinct endpoint with
-distinct invariants — the `409` single-active-timer check (#2855) and the `409` already-started check
-both have to move into a command — and because proving its cache fix needs its own regression test
-(a pre-*start* list GET), which this spec's test plan does not provide. Bundling it here would mean
-shipping an untested second fix.
-
-Note it is distinct from `start-timer/route.ts`: that one **creates and starts** a new entry (already
-command-backed); this one starts an **existing** entry. It needs its own command id, e.g.
-`staff.timesheets.time_entries.start_timer_existing` — do not overload the existing `start_timer`.
 
 **Segment routes — not this bug.** `[id]/segments/route.ts` (POST) and
 `[id]/segments/[segmentId]/route.ts` (PATCH) also bypass the command bus, but they mutate only
@@ -483,6 +497,7 @@ was never going to catch it.
 | 4 — Audit label translation | Done | 2026-07-29 | `staff.audit.timesheets.time_entries.stopTimer` in en/de/es/pl |
 | 5 — Unit coverage rework | Done | 2026-07-29 | Route-delegation + command lock/undo tests; #2416 gate relocated |
 | 6 — `TC-STAFF-029` + `TC-STAFF-011` pre-stop GET | Done | 2026-07-29 | Both fail pre-fix, pass post-fix on the ephemeral env |
+| 7 — `[id]/timer-start` conversion (was deferred) | Done | 2026-08-08 | `start_timer_existing` command + delegating route + `TC-STAFF-031`; unit + build gate green, integration run pending |
 
 ### Deliberate implementation decisions
 
@@ -606,10 +621,10 @@ Two things this investigation established that matter beyond the fix:
   query-engine occurrence.
 - **`[id]/timer-start` really does leave the cache stale**, confirmed empirically while
   debugging TC-STAFF-030: with a key warmed before the start, the warmed read returns
-  `total 0` while a cold key returns the entry. That is exactly the follow-up this spec
-  deferred in § Follow-ups, now with a reproduction. The UI is unaffected because TimerBar
-  starts through the command-backed atomic `/start-timer` route (#3311); only the legacy
-  per-entry route is affected.
+  `total 0` while a cold key returns the entry. That reproduction is what retired the
+  deferral: the route was converted in this branch's third commit (see § Follow-ups). The UI
+  was never affected, because TimerBar starts through the command-backed atomic
+  `/start-timer` route (#3311); only the legacy per-entry route was.
 
 A predicted knock-on did **not** materialise: fixing the filter did not recover
 `TC-STAFF-028`, which fails identically afterwards. Its cause is still unidentified.
@@ -618,6 +633,7 @@ A predicted knock-on did **not** materialise: fixing the filter did not recover
 
 | Date | Change |
 |---|---|
+| 2026-08-08 | Third commit: converted the deferred `[id]/timer-start` to `staff.timesheets.time_entries.start_timer_existing`, with `TC-STAFF-031` as the pre-start cache gate and the route's #2416/#2855 assertions relocated to a command-level test. Full unit suite green (7929 passed); the only failure is the pre-existing `explicit-sort-comparators` one, which flags `scripts/check-agents-md-budget.mjs:93` — a file untouched here. Integration not yet run for `TC-STAFF-031`. |
 | 2026-07-29 | Separate commit: fixed the `running=true` filter (`$exists` instead of null equality), added `TC-STAFF-030` as the execution-level gate, and empirically confirmed the deferred `[id]/timer-start` cache-staleness follow-up. Suite now 45 passed / 2 failed. |
 | 2026-07-29 | Full staff integration suite run with browsers installed: 43 passed, 3 failed. `TC-STAFF-014` is a load flake (passes in isolation); `TC-STAFF-027` and `TC-STAFF-028` are pre-existing failures inherited from the preceding timesheets-UX commit, whose own handoff doc records them as never executed. |
 | 2026-07-29 | Integration verified end to end: `TC-STAFF-029` and the amended `TC-STAFF-011` both FAIL against a pre-fix build and PASS against the rebuilt one. |
