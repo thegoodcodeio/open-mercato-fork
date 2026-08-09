@@ -637,6 +637,9 @@ export default function MyTimesheetsPage() {
 
   // --- Add row handler ---
   const visibleProjectIds = React.useMemo(() => new Set(projects.map((p) => p.id)), [projects])
+  // Same set, in the array form TimerBar's seed resolver takes. Memoized so the
+  // seed effect's dependency does not change identity on every render.
+  const visibleProjectIdList = React.useMemo(() => [...visibleProjectIds], [visibleProjectIds])
 
   // optimistic-lock-exempt: the my-projects PATCH calls below only toggle the
   // caller's own `showInGrid` preference on the staff.timesheets.time_project_member
@@ -892,6 +895,7 @@ export default function MyTimesheetsPage() {
           projects={allAssignedProjects}
           staffMemberId={staffMemberId}
           onTimerStopped={loadData}
+          visibleProjectIds={visibleProjectIdList}
         />
 
         {/* Summary cards */}

@@ -36,8 +36,24 @@ jest.mock('@open-mercato/ui/backend/injection/useGuardedMutation', () => ({
 }))
 
 jest.mock('@open-mercato/ui/backend/FlashMessages', () => ({ flash: jest.fn() }))
-jest.mock('@open-mercato/ui/backend/utils/apiCall', () => ({ apiCallOrThrow: jest.fn() }))
+jest.mock('@open-mercato/ui/backend/utils/apiCall', () => ({
+  apiCall: jest.fn(),
+  apiCallOrThrow: jest.fn(),
+}))
 jest.mock('../startTimer', () => ({ startTimerEntry: jest.fn() }))
+
+// Settled-and-empty: this spec is about the hint, not the seed. A stored default
+// would seed the picker and the "no project picked" branch would never render.
+jest.mock('../useTimesheetPreference', () => ({
+  useTimesheetPreference: () => ({
+    lastProjectId: null,
+    updatedAt: null,
+    isLoading: false,
+    isFetching: false,
+    error: null,
+    save: jest.fn().mockResolvedValue(undefined),
+  }),
+}))
 
 import { TimerBar } from '../TimerBar'
 

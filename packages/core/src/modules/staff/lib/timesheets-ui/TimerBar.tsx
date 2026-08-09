@@ -12,8 +12,13 @@ import { flash } from '@open-mercato/ui/backend/FlashMessages'
 import { useGuardedMutation } from '@open-mercato/ui/backend/injection/useGuardedMutation'
 import { ProjectColorDot } from './ProjectColorDot'
 import { useActiveTimesheetTimer } from './useActiveTimesheetTimer'
+import { useTimesheetPreference } from './useTimesheetPreference'
+import { resolveSeedProjectId } from './resolveSeedProjectId'
 import { startTimerEntry } from './startTimer'
 import { resolveTimerActionError } from './timerErrors'
+import { createLogger } from '@open-mercato/shared/lib/logger'
+
+const logger = createLogger('staff')
 
 type ProjectOption = {
   id: string
@@ -26,6 +31,8 @@ type TimerBarProps = {
   projects: ProjectOption[]
   staffMemberId: string | null
   onTimerStopped: () => void
+  /** Ids of the projects the member has opted into their grid (`show_in_grid`). */
+  visibleProjectIds?: string[]
 }
 
 const TIMER_MUTATION_CONTEXT_ID = 'staff-timesheets-timer-bar'
@@ -54,7 +61,12 @@ function getToday(): string {
   return `${year}-${month}-${day}`
 }
 
-export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarProps) {
+export function TimerBar({
+  projects,
+  staffMemberId,
+  onTimerStopped,
+  visibleProjectIds,
+}: TimerBarProps) {
   const t = useT()
   const { runMutation, retryLastMutation } = useGuardedMutation<TimerMutationContext>({
     contextId: TIMER_MUTATION_CONTEXT_ID,
@@ -73,7 +85,9 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
 
   const dropdownRef = useRef<HTMLDivElement>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const hasSeededRef = useRef(false)
   const activeTimer = useActiveTimesheetTimer({ staffMemberId })
+  const preference = useTimesheetPreference(staffMemberId)
 
   const activeEntryId = activeTimer.entryId
   const activeProjectId = activeTimer.projectId
@@ -135,6 +149,39 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
     }
   }, [])
 
+  // Seed the picker once the inputs it ranks are actually known.
+  //
+  // Both guards matter. Seeding before the active-timer lookup settles would apply
+  // a lower rung and then be overtaken by the running timer, so the picker would
+  // visibly flip or stick on the wrong project — the exact confusion #3750 reports.
+  // And seeding only while the selection is still null means a deliberate pick
+  // always beats a late-arriving fetch.
+  useEffect(() => {
+    if (hasSeededRef.current) return
+    if (!staffMemberId) return
+    if (activeTimer.isLoading || preference.isLoading) return
+    if (projects.length === 0) return
+    if (selectedProjectId !== null) return
+
+    hasSeededRef.current = true
+    const seeded = resolveSeedProjectId({
+      runningProjectId: activeTimer.projectId,
+      lastProjectId: preference.lastProjectId,
+      visibleProjectIds: visibleProjectIds ?? [],
+      assignedProjectIds: projects.map((p) => p.id),
+    })
+    if (seeded) setSelectedProjectId(seeded)
+  }, [
+    staffMemberId,
+    activeTimer.isLoading,
+    activeTimer.projectId,
+    preference.isLoading,
+    preference.lastProjectId,
+    projects,
+    selectedProjectId,
+    visibleProjectIds,
+  ])
+
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (
@@ -178,6 +225,15 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
       })
 
       setPersistedDescription(description)
+
+      // Remember the project on a *successful start* only — not on selection, so an
+      // idle mis-click in the dropdown never becomes tomorrow's default. The timer
+      // is already running at this point, so a failed write must not surface an
+      // error or fail the start; the next successful start corrects the memory.
+      void preference.save(selectedProjectId).catch((prefErr: unknown) => {
+        logger.warn('staff.timesheets.timer.preferenceWriteFailed', { err: prefErr })
+      })
+
       await activeTimer.refresh()
     } catch (err) {
       flash(
