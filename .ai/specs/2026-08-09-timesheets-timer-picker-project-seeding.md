@@ -672,7 +672,35 @@ One decision deferred to implementation, deliberately not pre-empted here:
 
 This touches `.tsx` under `packages/core/src/modules/staff/`, adds a database table, and adds an API surface, so it does **not** qualify for the automated-verification `skip-qa` exemption on any of the three counts. Screenshots should cover the tooltip on the disabled Start button and a pre-filled picker on load.
 
+## Implementation Status
+
+Branch `feat/3750-timer-picker-project-seeding`, based on `fix/2609-timer-stop-stale-list` (`c2606970c`).
+
+| Phase | Status | Notes |
+|---|---|---|
+| Phase 1 — disabled Start hint | **Complete** | Tooltip + `aria-describedby` + sr-only hint; all listed DS migrations plus `z-50` → `z-dropdown`. Picker promoted to `size="default"` (user decision). Unit tests green; `TC-STAFF-032` written, not yet executed. |
+| Phase 2 — shared preference + seeding | **Code complete, unverified** | Entity, migration, validator, service, `GET`/`PUT` route, hook, resolver, seeding effect, persist-on-start all landed. 28 unit tests green. `TC-STAFF-033`–`036`, `040`, `041` and the route-level guard tests **not yet written**. |
+| Phase 3 — dashboard widget unification | **Not started** | — |
+
+### Deviations from the spec, with rationale
+
+| Spec says | Implemented | Why |
+|---|---|---|
+| Resolve the caller with `getStaffMemberByUserId` | Inline scoped `findOneWithDecryption`, mirroring `my-projects/[projectId]` | That helper takes `tenantId`/`organizationId` but passes them only as a `DecryptionScope`; verified in `packages/shared/src/lib/encryption/find.ts` that the scope is never applied as a query filter. Its query is `WHERE user_id = ?` with no scope predicate, so a user in two organizations gets an arbitrary row — precisely the § Risk Register leakage this spec claims to mitigate. Falls under the spec's own rule that `my-projects/[projectId]` wins. The helper's defect is pre-existing and filed separately. |
+| Prefer MikroORM `em.upsert()` | Explicit parameterized `INSERT … ON CONFLICT … WHERE deleted_at IS NULL` | The spec's own fallback branch. Verified `db:generate` cannot express a partial unique index at all (see below), so relying on the ORM helper to infer one was not viable. |
+| `min-w-52` / `max-h-52` / `min-w-16` | Same | `min-w-16` is exact (64px). The other two are 208px vs 200px — nearest-neighbour, as the spec warned. `min-w-52` has an exact in-repo precedent for a dropdown (`ActionsDropdown.tsx`). |
+
+### Generator finding
+
+`yarn db:generate` emitted `staff_timesheet_preferences_unique_idx` as a **plain non-unique index**, silently dropping both `unique: true` and `where: 'deleted_at IS NULL'` from the entity declaration. This is load-bearing rather than cosmetic: the upsert's `ON CONFLICT … WHERE deleted_at IS NULL` needs a matching partial unique index to infer, and would otherwise fail at runtime. The migration is hand-corrected, following `Migration20260511112759` which exists solely to apply the same correction to the sibling timesheet tables. The snapshot records the index as `unique: false`, matching how the already-corrected sibling is recorded; a re-run reports `staff: no changes`.
+
 ## Changelog
+
+### 2026-08-09 — implementation (Phases 1–2)
+- Phase 1 complete. Picker size decision resolved **in favour of promoting the picker to `size="default"`**, per § Design System compliance's recommendation; the row now standardises on h-9.
+- Phase 2 code complete. Integration coverage `TC-STAFF-033`–`041` and Phase 3 remain outstanding.
+- Two spec corrections recorded above (staff-member resolution; upsert mechanism), plus the `db:generate` partial-index finding.
+- Line pointers re-verified against `c2606970c`: every factual claim holds; `:143`, `:262`, `:283`, `:362` and `:377` have drifted by 1–77 lines (`:143` is `handleStart`, not `handleStop`, which is at `:220`).
 
 ### 2026-08-09
 - Initial specification. Open Questions Q1–Q4 resolved: both remedies in one spec across three phases; shared server-side preference entity (replacing an initial `localStorage` proposal after the dashboard widget's existing server-side `lastProjectId` was found); seeding prefers grid-visible but never seeds outside the picker; fork-first on a stacked branch with a later upstream PR carrying the `$exists` fix.
