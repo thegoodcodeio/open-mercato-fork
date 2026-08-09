@@ -1005,6 +1005,8 @@
   "staff.timesheets.my.timer.searchProject": "Search projects...",
   "staff.timesheets.my.timer.selectProject": "Project",
   "staff.timesheets.my.timer.start": "Start timer",
+  "staff.timesheets.my.timer.startDisabledNoProject": "Elige un proyecto para iniciar el temporizador",
+  "staff.timesheets.my.timer.startDisabledNoProjects": "Aún no tienes proyectos asignados: pide a un administrador que te asigne uno",
   "staff.timesheets.my.timer.startError": "No se pudo iniciar el temporizador",
   "staff.timesheets.my.timer.stop": "Stop timer",
   "staff.timesheets.my.timer.stopError": "No se pudo detener el temporizador",

@@ -1,9 +1,11 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useId } from 'react'
 import { Play, Square } from 'lucide-react'
 import { Button } from '@open-mercato/ui/primitives/button'
 import { IconButton } from '@open-mercato/ui/primitives/icon-button'
+import { SearchInput } from '@open-mercato/ui/primitives/search-input'
+import { SimpleTooltip } from '@open-mercato/ui/primitives/tooltip'
 import { useT } from '@open-mercato/shared/lib/i18n/context'
 import { apiCallOrThrow } from '@open-mercato/ui/backend/utils/apiCall'
 import { flash } from '@open-mercato/ui/backend/FlashMessages'
@@ -81,6 +83,16 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
   const activeProjectName = activeProject?.name ?? activeTimer.projectName
   const activeProjectColor = activeProject?.color ?? activeTimer.projectColor
   const selectedProject = projects.find((p) => p.id === selectedProjectId)
+
+  const startHintId = useId()
+  const startDisabledReason = selectedProjectId
+    ? null
+    : projects.length === 0
+      ? t(
+          'staff.timesheets.my.timer.startDisabledNoProjects',
+          'No projects assigned yet — ask an admin to assign you to one',
+        )
+      : t('staff.timesheets.my.timer.startDisabledNoProject', 'Pick a project to start the timer')
 
   const filteredProjects = projects.filter((p) =>
     p.name.toLowerCase().includes(projectFilter.toLowerCase()),
@@ -296,7 +308,7 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
             <Button
               type="button"
               variant="outline"
-              size="sm"
+              size="default"
               onClick={() => {
                 setShowProjectDropdown(!showProjectDropdown)
                 setProjectFilter('')
@@ -309,19 +321,19 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
             </Button>
 
             {showProjectDropdown && (
-              <div className="absolute right-0 top-full mt-1 z-50 min-w-[200px] rounded-md border bg-popover p-1 shadow-md">
-                <input
-                  type="text"
+              <div className="absolute right-0 top-full mt-1 z-dropdown min-w-52 rounded-md border bg-popover p-1 shadow-md">
+                <SearchInput
+                  size="sm"
                   value={projectFilter}
-                  onChange={(e) => setProjectFilter(e.target.value)}
+                  onChange={setProjectFilter}
                   placeholder={t(
                     'staff.timesheets.my.timer.searchProject',
                     'Search projects...',
                   )}
-                  className="w-full bg-transparent border-b px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground mb-1"
+                  className="mb-1"
                   autoFocus
                 />
-                <div className="max-h-[200px] overflow-y-auto">
+                <div className="max-h-52 overflow-y-auto">
                   {filteredProjects.length === 0 ? (
                     <div className="px-2 py-1.5 text-xs text-muted-foreground">
                       {t(
@@ -360,7 +372,7 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
         )}
       </div>
 
-      <span className="font-mono text-sm tabular-nums min-w-[64px] text-right">
+      <span className="font-mono text-sm tabular-nums min-w-16 text-right">
         {formatElapsed(elapsedSeconds)}
       </span>
 
@@ -376,16 +388,28 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
           <Square className="size-4" />
         </IconButton>
       ) : (
-        <IconButton
-          type="button"
-          variant="primary"
-          size="default"
-          onClick={handleStart}
-          disabled={isStarting || !selectedProjectId}
-          aria-label={t('staff.timesheets.my.timer.start', 'Start timer')}
-        >
-          <Play className="size-4" />
-        </IconButton>
+        <>
+          <SimpleTooltip content={startDisabledReason} side="top">
+            <span className="inline-flex" tabIndex={startDisabledReason ? 0 : undefined}>
+              <IconButton
+                type="button"
+                variant="primary"
+                size="default"
+                onClick={handleStart}
+                disabled={isStarting || !selectedProjectId}
+                aria-label={t('staff.timesheets.my.timer.start', 'Start timer')}
+                aria-describedby={startDisabledReason ? startHintId : undefined}
+              >
+                <Play className="size-4" />
+              </IconButton>
+            </span>
+          </SimpleTooltip>
+          {startDisabledReason ? (
+            <span id={startHintId} className="sr-only">
+              {startDisabledReason}
+            </span>
+          ) : null}
+        </>
       )}
     </div>
   )
