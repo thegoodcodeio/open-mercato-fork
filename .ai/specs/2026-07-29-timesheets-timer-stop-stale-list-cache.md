@@ -1,6 +1,6 @@
 # Timesheets timer writes bypass the command bus and leave the CRUD list cache stale
 
-- **Status**: Implemented — verified (unit + build gate green; integration confirmed fail-before / pass-after for the #2609 fix. `TC-STAFF-031`, added with the later `[id]/timer-start` conversion, has not been run yet.)
+- **Status**: Implemented — verified (unit + build gate green; every regression gate confirmed fail-before / pass-after, including `TC-STAFF-031` for the `[id]/timer-start` conversion)
 - **Date**: 2026-07-29
 - **Upstream issue**: [open-mercato/open-mercato#2609](https://github.com/open-mercato/open-mercato/issues/2609) (`bug`, `priority-high`, unassigned)
 - **Umbrella**: upstream #2456 (Timesheets manual QA)
@@ -497,7 +497,7 @@ was never going to catch it.
 | 4 — Audit label translation | Done | 2026-07-29 | `staff.audit.timesheets.time_entries.stopTimer` in en/de/es/pl |
 | 5 — Unit coverage rework | Done | 2026-07-29 | Route-delegation + command lock/undo tests; #2416 gate relocated |
 | 6 — `TC-STAFF-029` + `TC-STAFF-011` pre-stop GET | Done | 2026-07-29 | Both fail pre-fix, pass post-fix on the ephemeral env |
-| 7 — `[id]/timer-start` conversion (was deferred) | Done | 2026-08-08 | `start_timer_existing` command + delegating route + `TC-STAFF-031`; unit + build gate green, integration run pending |
+| 7 — `[id]/timer-start` conversion (was deferred) | Done | 2026-08-08 | `start_timer_existing` command + delegating route + `TC-STAFF-031`; unit + build gate green, integration confirmed fail-before / pass-after |
 
 ### Deliberate implementation decisions
 
@@ -594,6 +594,33 @@ touches `timer-stop`. This change modifies **no `.tsx` file at all**.
 They should be triaged on their own issue; they are pre-existing debt this PR inherits rather than
 creates, and they should not gate it.
 
+#### Integration: `TC-STAFF-031` proven non-vacuous
+
+The `[id]/timer-start` conversion shipped with the same fail-before/pass-after standard applied to
+`TC-STAFF-029`, because a new regression gate that has only ever been observed passing proves
+nothing — that is precisely how `TC-STAFF-011` masked #2609 for two months.
+
+Post-fix, on a fresh ephemeral env (isolated port 58146, `ENABLE_CRUD_API_CACHE=true`):
+`TC-STAFF-011`, `TC-STAFF-029`, `TC-STAFF-030` and `TC-STAFF-031` all **pass** — so the three
+pre-existing specs that `POST` to `timer-start` did not regress. Those four are the complete affected
+surface; no other spec in `staff/__integration__` touches that endpoint.
+
+Pre-fix, the route was checked out at `50cf84394` (the commit before the conversion) in a **detached
+git worktree with its own `yarn install`** — deliberately not a symlinked `node_modules`, since the
+workspace link `node_modules/@open-mercato/core` would then resolve back to the fixed source and
+silently invalidate the experiment. Verified before building: the resolved route file contained zero
+`commandBus` references, and the workspace link was relative (`../../packages/core`).
+
+| Spec | Pre-fix build | Post-fix build |
+|---|---|---|
+| `TC-STAFF-031` | **FAIL** — `Started entry must have started_at in the list served from the warmed cache key` | **PASS** |
+
+The failure lands on the cache-staleness assertion itself, not on setup, which is what makes it a
+gate rather than a smoke test. Playwright's retry then failed differently — `POST timer-start`
+returned `409` instead of `200` — because the first attempt left a running timer that teardown could
+not see: `stopActiveEntries` reads the same stale list. That cascade is a downstream artifact of the
+bug, not a second defect.
+
 #### Separate defect found during manual QA — `running=true` matches zero rows
 
 Manual verification of this fix was blocked by an unrelated upstream bug: the TimerBar never
@@ -633,7 +660,7 @@ A predicted knock-on did **not** materialise: fixing the filter did not recover
 
 | Date | Change |
 |---|---|
-| 2026-08-08 | Third commit: converted the deferred `[id]/timer-start` to `staff.timesheets.time_entries.start_timer_existing`, with `TC-STAFF-031` as the pre-start cache gate and the route's #2416/#2855 assertions relocated to a command-level test. Full unit suite green (7929 passed); the only failure is the pre-existing `explicit-sort-comparators` one, which flags `scripts/check-agents-md-budget.mjs:93` — a file untouched here. Integration not yet run for `TC-STAFF-031`. |
+| 2026-08-08 | Third commit: converted the deferred `[id]/timer-start` to `staff.timesheets.time_entries.start_timer_existing`, with `TC-STAFF-031` as the pre-start cache gate and the route's #2416/#2855 assertions relocated to a command-level test. Full unit suite green (7929 passed); the only failure is the pre-existing `explicit-sort-comparators` one, which flags `scripts/check-agents-md-budget.mjs:93` — a file untouched here. Integration: `TC-STAFF-011`, `TC-STAFF-029`, `TC-STAFF-030` and `TC-STAFF-031` all pass post-fix, and `TC-STAFF-031` was confirmed failing pre-fix (§ Integration: `TC-STAFF-031` proven non-vacuous). |
 | 2026-07-29 | Separate commit: fixed the `running=true` filter (`$exists` instead of null equality), added `TC-STAFF-030` as the execution-level gate, and empirically confirmed the deferred `[id]/timer-start` cache-staleness follow-up. Suite now 45 passed / 2 failed. |
 | 2026-07-29 | Full staff integration suite run with browsers installed: 43 passed, 3 failed. `TC-STAFF-014` is a load flake (passes in isolation); `TC-STAFF-027` and `TC-STAFF-028` are pre-existing failures inherited from the preceding timesheets-UX commit, whose own handoff doc records them as never executed. |
 | 2026-07-29 | Integration verified end to end: `TC-STAFF-029` and the amended `TC-STAFF-011` both FAIL against a pre-fix build and PASS against the rebuilt one. |
