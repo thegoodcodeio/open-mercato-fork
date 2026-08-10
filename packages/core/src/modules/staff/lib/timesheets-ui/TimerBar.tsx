@@ -364,7 +364,12 @@ export function TimerBar({
             <Button
               type="button"
               variant="outline"
-              size="default"
+              // h-8, matching the Start/Stop `IconButton size="default"` (size-8)
+              // beside it. `Button` and `IconButton` do NOT share a size scale:
+              // IconButton `default` is 32px and `lg` is 36px, so `Button
+              // size="default"` (36px) would break the row, not fix it.
+              // See `.ai/ui-components.md` § primitive pairing.
+              size="sm"
               onClick={() => {
                 setShowProjectDropdown(!showProjectDropdown)
                 setProjectFilter('')
@@ -377,7 +382,7 @@ export function TimerBar({
             </Button>
 
             {showProjectDropdown && (
-              <div className="absolute right-0 top-full mt-1 z-dropdown min-w-52 rounded-md border bg-popover p-1 shadow-md">
+              <div className="absolute right-0 top-full mt-1 z-dropdown min-w-52 rounded-md border bg-popover p-1 shadow-lg">
                 <SearchInput
                   size="sm"
                   value={projectFilter}

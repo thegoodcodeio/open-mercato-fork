@@ -27,6 +27,10 @@ export function resolveSeedProjectId(input: SeedProjectInput): string | null {
   const assignable = new Set(input.assignedProjectIds)
   if (assignable.size === 0) return null
 
+  // Rung 1 is authoritative but not terminal: a running timer on a project the
+  // picker cannot display falls through to rung 2 rather than resolving to null.
+  // That is deliberate — "first match wins" ranks the rungs, while the presence
+  // guard decides whether a rung matched at all.
   if (input.runningProjectId && assignable.has(input.runningProjectId)) {
     return input.runningProjectId
   }
