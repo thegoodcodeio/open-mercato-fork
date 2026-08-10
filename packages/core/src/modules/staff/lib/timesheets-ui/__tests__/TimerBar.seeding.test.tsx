@@ -9,6 +9,7 @@ const timerState = {
   running: false,
   projectId: null as string | null,
   isLoading: false,
+  error: null as Error | null,
 }
 
 const preferenceState = {
@@ -30,7 +31,7 @@ jest.mock('../useActiveTimesheetTimer', () => ({
     notes: null,
     isLoading: timerState.isLoading,
     isFetching: false,
-    error: null,
+    error: timerState.error,
     refresh: jest.fn().mockResolvedValue(undefined),
   }),
 }))
@@ -89,6 +90,7 @@ describe('TimerBar picker seeding', () => {
     timerState.running = false
     timerState.projectId = null
     timerState.isLoading = false
+    timerState.error = null
     preferenceState.lastProjectId = null
     preferenceState.isLoading = false
   })
@@ -125,6 +127,27 @@ describe('TimerBar picker seeding', () => {
       preferenceState.isLoading = true
       renderTimerBar({ visibleProjectIds: ['p-1'] })
       expect(pickerLabel()).toBe('Project')
+    })
+
+    it('does not seed a lower rung when the active-timer lookup failed', async () => {
+      // A failed lookup settles `isLoading` but falls back to an empty timer, so
+      // rung 1 reads null and rung 2 would win — and latch. Thirty seconds later
+      // the refetch recovers, the running timer hides the picker, and the wrong
+      // seed only resurfaces after a Stop, booking the next start to the wrong
+      // project. That is the exact confusion #3750 exists to fix.
+      timerState.error = new Error('lookup failed')
+      preferenceState.lastProjectId = 'p-2'
+      const { rerender } = renderTimerBar()
+      expect(pickerLabel()).toBe('Project')
+
+      // The refetch recovers and reports the timer really was on Apollo.
+      timerState.error = null
+      timerState.projectId = 'p-1'
+      rerender(
+        <TimerBar projects={PROJECTS} staffMemberId="staff-1" onTimerStopped={jest.fn()} />,
+      )
+
+      await waitFor(() => expect(pickerLabel()).toContain('Apollo'))
     })
 
     it('lets a running timer outrank the persisted preference', () => {

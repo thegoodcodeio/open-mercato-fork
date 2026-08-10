@@ -140,6 +140,14 @@ export async function PUT(req: Request) {
 
     // Honours the header when a caller sends one; the timer-start path sends none
     // and is last-write-wins by design (§ Optimistic Locking).
+    //
+    // This is check-then-act, not compare-and-swap: the upsert below issues an
+    // unconditional DO UPDATE, so two writers that both pass this check both
+    // write and the later one wins. Adequate here — the contested value is one
+    // UUID naming a UI default, both writers are necessarily the same
+    // authenticated member, and the losing outcome is identical to the
+    // documented last-write-wins default. Folding `AND updated_at = ?` into the
+    // upsert would be the stronger guarantee if this ever backs a real form.
     await enforceCommandOptimisticLockWithGuards(container, {
       resourceKind: RESOURCE_KIND,
       resourceId: staffMember.id,
@@ -241,7 +249,7 @@ export const openApi: OpenApiRouteDoc = {
     PUT: {
       summary: "Set the caller's last-used time project",
       description:
-        'Written automatically after a successful timer start. Atomically upserts the single row for (organization, tenant, member). Rejects a project the caller is not actively assigned to. Honours `x-om-ext-optimistic-lock-expected-updated-at` when supplied; callers that omit it are last-write-wins.',
+        'Written automatically after a successful timer start. Atomically upserts the single row for (organization, tenant, member). Rejects a project the caller is not actively assigned to. When `x-om-ext-optimistic-lock-expected-updated-at` is supplied it is validated against the version read at the start of this request and rejected with 409 on mismatch; it is NOT a compare-and-swap, so two writers that both pass the check will both write and the later one wins. Callers that omit the header — including the timer-start path, which is the only production caller — are last-write-wins by design.',
       requestBody: {
         contentType: 'application/json',
         schema: staffTimesheetPreferenceUpdateSchema,

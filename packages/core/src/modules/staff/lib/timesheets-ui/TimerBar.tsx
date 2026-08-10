@@ -86,6 +86,7 @@ export function TimerBar({
   const dropdownRef = useRef<HTMLDivElement>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const hasSeededRef = useRef(false)
+  const seededForMemberRef = useRef<string | null>(null)
   const activeTimer = useActiveTimesheetTimer({ staffMemberId })
   const preference = useTimesheetPreference(staffMemberId)
 
@@ -160,6 +161,12 @@ export function TimerBar({
     if (hasSeededRef.current) return
     if (!staffMemberId) return
     if (activeTimer.isLoading || preference.isLoading) return
+    // A failed lookup settles `isLoading` but falls back to an empty timer, so
+    // rung 1 would read `null` and a lower rung would win — then latch. On the
+    // next 30s refetch the running timer reappears, hides the picker, and the
+    // wrong seed only resurfaces after a Stop. An unresolved timer is "not
+    // settled yet", not "nothing running".
+    if (activeTimer.error) return
     if (projects.length === 0) return
     if (selectedProjectId !== null) return
 
@@ -174,6 +181,7 @@ export function TimerBar({
   }, [
     staffMemberId,
     activeTimer.isLoading,
+    activeTimer.error,
     activeTimer.projectId,
     preference.isLoading,
     preference.lastProjectId,
@@ -181,6 +189,22 @@ export function TimerBar({
     selectedProjectId,
     visibleProjectIds,
   ])
+
+  // `StaffTeamMember` is organization-scoped, so a different member id means a
+  // different organization. If this component ever survives that switch without
+  // remounting, a latched ref would hold the previous org's project while
+  // `projects` refreshes to the new org's list — a picker showing a project the
+  // member cannot book to. Cheap insurance; harmless if the switch remounts.
+  //
+  // Only on an actual change: firing on mount would race the seed effect and
+  // clear the selection it had just applied.
+  useEffect(() => {
+    const previous = seededForMemberRef.current
+    seededForMemberRef.current = staffMemberId
+    if (previous === null || previous === staffMemberId) return
+    hasSeededRef.current = false
+    setSelectedProjectId(null)
+  }, [staffMemberId])
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
