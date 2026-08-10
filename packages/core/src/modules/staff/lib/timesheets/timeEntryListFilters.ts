@@ -57,11 +57,12 @@ export function buildTimeEntryListFilters(query: TimeEntryListFilterQuery): Reco
     filters[PROJECT_COLUMN] = query.projectId
   }
   if (parseBooleanToken(query.running ?? null) === true) {
-    // MUST be `$exists`, not `{ $ne: null }` / a bare `null`. The query engine
-    // maps `$ne` to SQL `!=` and a bare value to `=`, so those render as
-    // `started_at != NULL` / `ended_at = NULL` — both UNKNOWN in three-valued
-    // logic, so the filter matched zero rows and no running timer was ever
-    // found. `$exists` is the operator that emits `IS NOT NULL` / `IS NULL`.
+    // Use `$exists` rather than `{ $ne: null }` / a bare `null`: it is the only
+    // spelling that is null-safe on BOTH query-engine paths. `applyColumnOp`
+    // (base columns) null-guards `eq`/`ne` into `IS NULL` / `IS NOT NULL`, but
+    // `applyIndexDocFilter` (fields resolved from `entity_indexes.doc`) does not
+    // — there they render as `= NULL` / `<> NULL`, which are UNKNOWN and match
+    // zero rows. `$exists` emits `IS NOT NULL` / `IS NULL` on both.
     filters[STARTED_AT_COLUMN] = { $exists: true }
     filters[ENDED_AT_COLUMN] = { $exists: false }
   }

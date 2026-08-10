@@ -226,6 +226,18 @@ The business logic moves verbatim out of the route — do not rewrite it:
   ([`crud/types.ts:28`](../../packages/shared/src/lib/crud/types.ts:28)); `staff/commands/leave-requests.ts:53`
   is an in-repo example.
 
+  **Correction (review):** the field is declared but **unread**. `emitCrudSideEffects` →
+  `DataEngine.markOrmEntityChange` → `emitOrmEntityEvent` consumes only `entityType`,
+  `buildUpsertPayload` and `buildDeletePayload`, and performs no cache invalidation at all;
+  the only readers of `cacheAliases` anywhere are `command-bus.ts` (`buildLog(...).context`
+  / `log.contextJson`) and the audit-logs redo route reading that same `contextJson`. So the
+  declaration does not "carry the alias explicitly" — the derivation is doing all of the work,
+  on both execute and undo. It is kept purely for the `packages/core/AGENTS.md` convention,
+  with a comment saying so, because dropping it would put the file at odds with a documented
+  rule. A command needing an alias the command id cannot derive must set
+  `buildLog(...).context.cacheAliases` instead, the way
+  `planner/commands/availability-weekly.ts:322` does. See § Follow-ups.
+
   Blast radius: `timeEntryCrudIndexer` is shared by the four existing time-entry commands
   (create/start/update/delete), so they all gain the alias too. That is additive — a broader tag
   flush, never a narrower one — but mention it in the PR description.
@@ -312,6 +324,23 @@ Do not move them into the command and do not drop the `afterSuccessCallbacks` lo
 
 Additive only: the `x-om-operation` header (undo token) appears on success, matching `start-timer`.
 
+**Documented deltas.** Three behaviours do change, all fail-closed and all intended:
+
+1. **Guard ordering.** Guards now run before entry resolution, so a blocking guard on a
+   missing entry answers with the guard's status rather than `404`.
+2. **Non-UUID `{id}`.** The command input is zod-validated (`scopedUpdateFields.id` is
+   `z.string().uuid()`), so a malformed path segment now fails validation instead of reaching
+   a lookup that would have returned `404`.
+3. **Tenant resolution narrows to the authenticated tenant.** The old routes scoped by
+   `scope?.tenantId ?? auth.tenantId`; the command path resolves the tenant through
+   `withScopedPayload` as `ctx.auth?.tenantId`, and `ensureTenantScope` then hard-requires
+   input and auth tenant to match. A superadmin operating under a tenant override therefore
+   gets `404` where the route previously acted. This is deliberate: auth-tenant-only is the
+   invariant every command-bus write already enforces, and restoring the old preference would
+   require relaxing the shared `ensureTenantScope` guard. Organization scoping is unchanged
+   (`ctx.selectedOrganizationId ?? ctx.auth?.orgId` matches the old
+   `scope?.selectedId ?? auth.orgId`).
+
 Both UI call sites must keep working unchanged:
 [`TimerBar.tsx:234`](../../packages/core/src/modules/staff/lib/timesheets-ui/TimerBar.tsx:234) and
 [`widget.client.tsx:188`](../../packages/core/src/modules/staff/widgets/dashboard/timesheets-time-reporting/widget.client.tsx:188).
@@ -367,6 +396,32 @@ refuses with `409` when the timer has since been stopped, because the stop's `en
 `[id]/segments/[segmentId]/route.ts` (PATCH) also bypass the command bus, but they mutate only
 `StaffTimeEntrySegment`, never the parent `StaffTimeEntry` row, and neither exposes a cached GET — so
 no cached list projection goes stale. Converting them is a consistency/audit improvement only.
+
+**Establish what actually gates `TC-STAFF-030`.** Per the corrected root cause above, the
+`$exists` predicate compiles to the same SQL as its predecessor on the base-column path, so it
+cannot be what turned that spec green. Re-run it on an ephemeral env against a build with the
+`timer-start` conversion applied and the predicate reverted. If it passes, `TC-STAFF-030` is a
+second gate on the timer-start cache bug and its name/description should say so; if it fails,
+there is a third defect behind the TimerBar symptom that nothing in this branch addresses.
+
+**`CrudIndexerConfig.cacheAliases` is declared but unread.** Either wire the ORM side-effect
+path to honour it, or drop it from `crud/types.ts` and correct the
+`packages/core/AGENTS.md` § Command Side Effects rule that tells every command to set it. Until
+one of those happens, the rule instructs authors to write configuration with no effect —
+`staff/commands/leave-requests.ts:53` and this file both follow it. Platform-level, not this PR.
+
+**Review nits carried forward** (deliberately not fixed here to keep this diff scoped; the fork
+has issues disabled, so they are recorded here rather than filed):
+
+- `stopTimerCommand` writes `lockedEntry.updatedAt` by hand in both `execute` and `undo`, but
+  `StaffTimeEntry.updatedAt` already declares `onUpdate`, and `startTimerExistingCommand.undo`
+  correctly relies on that hook. Related: `TimeEntryStopUndoState.updatedAt` is captured and
+  never restored, so it is a dead field in the undo payload.
+- Both commands pass the pre-transaction `entry` instance to `emitCrudSideEffects`, whose
+  `endedAt` / `durationMinutes` / `startedAt` are the pre-write values. Harmless — the reindex
+  payload carries only `recordId` plus scope and the subscriber re-reads, and the CRUD event
+  payload is identifiers-only — but passing the `lockedEntry` returned from the transaction
+  would make the intent match the mechanism.
 
 ## Testing
 
@@ -621,31 +676,48 @@ returned `409` instead of `200` — because the first attempt left a running tim
 not see: `stopActiveEntries` reads the same stale list. That cascade is a downstream artifact of the
 bug, not a second defect.
 
-#### Separate defect found during manual QA — `running=true` matches zero rows
+#### `running=true` hardened to `$exists` — and a corrected root cause
 
-Manual verification of this fix was blocked by an unrelated upstream bug: the TimerBar never
-left the "Start" state, so the stop flow could not be exercised by hand at all.
+Manual verification of this fix was blocked by a separate symptom: the TimerBar never left
+the "Start" state, so the stop flow could not be exercised by hand at all.
 
-Root cause: `buildTimeEntryListFilters` built the #3717 running-timer lookup as
-`{ started_at: { $ne: null }, ended_at: null }`. The query engine renders `$ne` as SQL `!=`
-and a bare value as `=`, so those became `started_at != NULL` / `ended_at = NULL` — both
-UNKNOWN in three-valued logic, matching **zero rows unconditionally**. Every surface that
-resolves the active timer through `useActiveTimesheetTimer` was therefore blind to running
-timers. The engine's `$exists` operator (`is not null` / `is null`) is the correct one.
+`buildTimeEntryListFilters` built the #3717 running-timer lookup as
+`{ started_at: { $ne: null }, ended_at: null }`, and this spec originally recorded that as
+the cause, on the theory that the query engine renders `$ne` as SQL `!=` and a bare value as
+`=`, matching zero rows. **That mechanism was wrong for these two fields**, and the correction
+matters more than the fix does. The engine has two operator dispatchers
+([`query/engine.ts`](../../packages/shared/src/lib/query/engine.ts)):
 
-Fixed here as a **separate commit** — `{ $exists: true }` / `{ $exists: false }` — with
-`TC-STAFF-030-running-timer-lookup.spec.ts` as the execution-level gate (confirmed failing
-before the change, passing after) and a `nullSemanticsOf` assertion in the unit test that
-rejects any null-equality comparison. The two-line change is confined to one filter builder
-with a single call site; the shared query engine is untouched. Drafted for upstream report.
+| Dispatcher | Used when | `{ $ne: null }` | bare `null` | `$exists` |
+|---|---|---|---|---|
+| `applyColumnOp` / `buildColumnOpExpression` | the field is a real base column | `IS NOT NULL` | `IS NULL` | `IS NOT NULL` / `IS NULL` |
+| `applyIndexDocFilter` | `resolveBaseColumn` found no column, so the field is read from `entity_indexes.doc` | `doc->>'f' <> NULL` → UNKNOWN, **zero rows** | `= NULL` → UNKNOWN, **zero rows** | `IS NOT NULL` / `IS NULL` |
+
+Both base dispatchers null-guard `eq` and `ne` explicitly. `started_at` and `ended_at` are
+real columns on `staff_time_entries`, so the list route takes the **first** row: the pre-fix
+predicate and `$exists` compile to identical SQL, and the ORM fallback path agrees
+(MikroORM maps `$exists` to `not null` and already handled `$ne: null`). The change is
+therefore **behaviour-preserving hardening**, not a bug fix, and the "blind to running
+timers" conclusion does not follow from it.
+
+`$exists` is still the right spelling and stays: it is the only one that is null-safe
+regardless of how a field resolves, which is a real hazard for any filter over a field that
+falls through to the index doc. The unit test's `nullSemanticsOf` helper models the strict
+(index-doc) dispatcher for exactly that reason.
+
+**Open question, deliberately not closed here:** if `TC-STAFF-030` genuinely failed pre-fix,
+the cause was not this predicate. The most likely explanation is the item below — the
+`[id]/timer-start` cache staleness confirmed in the same debugging session, whose fix landed
+in this branch's third commit. Re-running `TC-STAFF-030` against a build with commit 3 applied
+and this predicate reverted would settle it; that needs an ephemeral env and has not been done.
 
 Two things this investigation established that matter beyond the fix:
 
-- **The predicate was copied across an abstraction boundary where it changes meaning.**
-  `{ $ne: null }` is correct in the `start_timer` command because that runs through MikroORM
-  (`IS NOT NULL`); the list route runs through the query engine (`!= NULL`). Every other
-  `{ $ne: null }` in the repo is on the MikroORM path and is fine — this was the only
-  query-engine occurrence.
+- **`{ $ne: null }` is safe far more often than first recorded.** It is correct on the
+  MikroORM path *and* on the query engine's base-column path. The genuine hazard is narrower
+  and was previously unnamed: null equality against a field resolved from `entity_indexes.doc`.
+  The earlier claim that this was "the only query-engine occurrence" of a broken predicate
+  does not hold and should not be used to justify skipping other call sites.
 - **`[id]/timer-start` really does leave the cache stale**, confirmed empirically while
   debugging TC-STAFF-030: with a key warmed before the start, the warmed read returns
   `total 0` while a cold key returns the entry. That reproduction is what retired the
@@ -653,13 +725,14 @@ Two things this investigation established that matter beyond the fix:
   was never affected, because TimerBar starts through the command-backed atomic
   `/start-timer` route (#3311); only the legacy per-entry route was.
 
-A predicted knock-on did **not** materialise: fixing the filter did not recover
+A predicted knock-on did **not** materialise: changing the filter did not recover
 `TC-STAFF-028`, which fails identically afterwards. Its cause is still unidentified.
 
 ## Changelog
 
 | Date | Change |
 |---|---|
+| 2026-08-10 | Review fixes (`om-auto-fix-pr`): (1) **corrected the `running=true` root cause** — the query engine's base-column dispatchers (`applyColumnOp` / `buildColumnOpExpression`) null-guard `eq`/`ne` into `IS NULL` / `IS NOT NULL`, so the pre-fix predicate compiled to the same SQL as `$exists` and the "matches zero rows" claim only holds on the `applyIndexDocFilter` path, which these real columns do not take; `$exists` is retained as null-safe-on-both-paths hardening, and the open question of what actually gates `TC-STAFF-030` is recorded as a follow-up; (2) recorded that `CrudIndexerConfig.cacheAliases` has **no runtime reader** — the declaration is kept for the `packages/core/AGENTS.md` convention with a comment saying so, and the platform gap is a follow-up; (3) documented the tenant-resolution narrowing (auth-tenant-only via `ensureTenantScope`) alongside the guard-ordering and non-UUID-`{id}` deltas in § API contracts; (4) added the four missing `staff.timesheets.my.*` keys across all four locales so `yarn i18n:check-usage` exits clean on this branch; (5) corrected the `nullSemanticsOf` unit-test helper to model the index-doc dispatcher and fixed its wrong engine path reference. |
 | 2026-08-08 | Third commit: converted the deferred `[id]/timer-start` to `staff.timesheets.time_entries.start_timer_existing`, with `TC-STAFF-031` as the pre-start cache gate and the route's #2416/#2855 assertions relocated to a command-level test. Full unit suite green (7929 passed); the only failure is the pre-existing `explicit-sort-comparators` one, which flags `scripts/check-agents-md-budget.mjs:93` — a file untouched here. Integration: `TC-STAFF-011`, `TC-STAFF-029`, `TC-STAFF-030` and `TC-STAFF-031` all pass post-fix, and `TC-STAFF-031` was confirmed failing pre-fix (§ Integration: `TC-STAFF-031` proven non-vacuous). |
 | 2026-07-29 | Separate commit: fixed the `running=true` filter (`$exists` instead of null equality), added `TC-STAFF-030` as the execution-level gate, and empirically confirmed the deferred `[id]/timer-start` cache-staleness follow-up. Suite now 45 passed / 2 failed. |
 | 2026-07-29 | Full staff integration suite run with browsers installed: 43 passed, 3 failed. `TC-STAFF-014` is a load flake (passes in isolation); `TC-STAFF-027` and `TC-STAFF-028` are pre-existing failures inherited from the preceding timesheets-UX commit, whose own handoff doc records them as never executed. |
