@@ -15,6 +15,7 @@ const timerState = {
 const preferenceState = {
   lastProjectId: null as string | null,
   isLoading: false,
+  error: null as Error | null,
 }
 
 const saveMock = jest.fn().mockResolvedValue(undefined)
@@ -42,7 +43,7 @@ jest.mock('../useTimesheetPreference', () => ({
     updatedAt: null,
     isLoading: preferenceState.isLoading,
     isFetching: false,
-    error: null,
+    error: preferenceState.error,
     save: saveMock,
   }),
 }))
@@ -93,6 +94,7 @@ describe('TimerBar picker seeding', () => {
     timerState.error = null
     preferenceState.lastProjectId = null
     preferenceState.isLoading = false
+    preferenceState.error = null
   })
 
   it('seeds from the persisted last project', () => {
@@ -148,6 +150,33 @@ describe('TimerBar picker seeding', () => {
       )
 
       await waitFor(() => expect(pickerLabel()).toContain('Apollo'))
+    })
+
+    it('re-seeds from scratch when the staff member changes', async () => {
+      // A different member id means a different organization. If the component
+      // survives that switch without remounting, a latched ref would keep the
+      // previous org's project selected while `projects` refreshes to the new
+      // org's list. Guarded so it fires only on a real member-to-member change:
+      // an unconditional reset runs on mount and clobbers the fresh seed.
+      preferenceState.lastProjectId = 'p-2'
+      const { rerender } = renderTimerBar()
+      expect(pickerLabel()).toContain('Borealis')
+
+      preferenceState.lastProjectId = 'p-1'
+      rerender(
+        <TimerBar projects={PROJECTS} staffMemberId="staff-2" onTimerStopped={jest.fn()} />,
+      )
+
+      await waitFor(() => expect(pickerLabel()).toContain('Apollo'))
+    })
+
+    it('does not seed a lower rung when the preference fetch failed', () => {
+      // Symmetric with the active-timer guard: a failed fetch settles with
+      // `lastProjectId: null`, so rung 2 is skipped and a lower rung would
+      // latch before a retry could correct it.
+      preferenceState.error = new Error('preference lookup failed')
+      renderTimerBar({ visibleProjectIds: ['p-1'] })
+      expect(pickerLabel()).toBe('Project')
     })
 
     it('lets a running timer outrank the persisted preference', () => {

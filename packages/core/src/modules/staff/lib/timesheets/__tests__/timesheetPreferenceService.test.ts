@@ -17,8 +17,11 @@ const SCOPE = { tenantId: 'tenant-1', organizationId: 'org-1' }
 const MEMBER_ID = 'member-1'
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111'
 
-function buildEm(execute: jest.Mock) {
-  return { getConnection: () => ({ execute }) } as unknown as EntityManager
+function buildEm(execute: jest.Mock, transactionContext: unknown = undefined) {
+  return {
+    getConnection: () => ({ execute }),
+    getTransactionContext: () => transactionContext,
+  } as unknown as EntityManager
 }
 
 function normalizeSql(sql: string): string {
@@ -107,6 +110,18 @@ describe('timesheetPreferenceService', () => {
       const result = await saveTimesheetPreference(buildEm(execute), SCOPE, MEMBER_ID, PROJECT_ID)
 
       expect(result.updatedAt).toBe('2026-08-09T10:00:00.000Z')
+    })
+
+    it('joins the ambient transaction when there is one', async () => {
+      // Nothing wraps the route in a transaction today, so this is future-
+      // proofing: without the context the raw upsert would silently run on a
+      // separate connection and escape any transaction added later.
+      const execute = jest.fn().mockResolvedValue([{ last_project_id: null, updated_at: new Date() }])
+      const transaction = { id: 'tx-1' }
+
+      await saveTimesheetPreference(buildEm(execute, transaction), SCOPE, MEMBER_ID, null)
+
+      expect(execute.mock.calls[0][3]).toBe(transaction)
     })
 
     it('scopes the insert by tenant and organization', async () => {

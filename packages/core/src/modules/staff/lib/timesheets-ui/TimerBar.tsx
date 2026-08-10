@@ -167,6 +167,12 @@ export function TimerBar({
     // wrong seed only resurfaces after a Stop. An unresolved timer is "not
     // settled yet", not "nothing running".
     if (activeTimer.error) return
+    // Same reasoning for the preference: a failed fetch settles with
+    // `lastProjectId: null`, so rung 2 would be skipped and a lower rung would
+    // latch before a retry could correct it. Lower stakes than the timer —
+    // rungs 3 and 4 need exactly one candidate, so the worst case is the same
+    // project or no seed, never a wrong one — but the two guards should agree.
+    if (preference.error) return
     if (projects.length === 0) return
     if (selectedProjectId !== null) return
 
@@ -184,6 +190,7 @@ export function TimerBar({
     activeTimer.error,
     activeTimer.projectId,
     preference.isLoading,
+    preference.error,
     preference.lastProjectId,
     projects,
     selectedProjectId,
@@ -193,13 +200,21 @@ export function TimerBar({
   // `StaffTeamMember` is organization-scoped, so a different member id means a
   // different organization. If this component ever survives that switch without
   // remounting, a latched ref would hold the previous org's project while
-  // `projects` refreshes to the new org's list — a picker showing a project the
-  // member cannot book to. Cheap insurance; harmless if the switch remounts.
+  // `projects` refreshes to the new org's list.
   //
-  // Only on an actual change: firing on mount would race the seed effect and
-  // clear the selection it had just applied.
+  // This covers the *preference* path only. `activeTimesheetTimerQueryKey` is a
+  // bare constant with no member or org in it, so the active-timer query can
+  // still serve the previous org's cached result across such a switch. That is
+  // a pre-existing gap, recorded in the spec as an adjacent issue; the
+  // `assignedProjectIds` guard in `resolveSeedProjectId` keeps it from
+  // producing a cross-org *seed*, so the residue is a stale display.
+  //
+  // Only on an actual member-to-member change: firing on mount would race the
+  // seed effect and clear the selection it had just applied, and treating a
+  // transition to `null` as a switch would discard a deliberate pick.
   useEffect(() => {
     const previous = seededForMemberRef.current
+    if (!staffMemberId) return
     seededForMemberRef.current = staffMemberId
     if (previous === null || previous === staffMemberId) return
     hasSeededRef.current = false

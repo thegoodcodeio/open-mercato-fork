@@ -100,10 +100,13 @@ export async function saveTimesheetPreference(
 ): Promise<TimesheetPreference> {
   type UpsertRow = { last_project_id: string | null; updated_at: Date | string }
   const params = [scope.tenantId, scope.organizationId, staffMemberId, lastProjectId]
+  // Nothing wraps this route in a transaction today, so the context is
+  // undefined and the behaviour is unchanged — but passing it means the upsert
+  // joins the transaction rather than silently escaping it if one is ever added.
 
   let rows: UpsertRow[] | undefined
   try {
-    rows = await em.getConnection().execute<UpsertRow[]>(UPSERT_SQL, params)
+    rows = await em.getConnection().execute<UpsertRow[]>(UPSERT_SQL, params, 'all', em.getTransactionContext())
   } catch (err) {
     // Defensive only, with no known trigger. The conflict target infers the
     // partial unique index, so concurrent writers resolve inside the statement,
@@ -112,7 +115,7 @@ export async function saveTimesheetPreference(
     // braces guard the spec asks for, and as the one place a 23505 on this table
     // would be attributable if the schema ever drifts.
     if (!isUniqueViolation(err)) throw err
-    rows = await em.getConnection().execute<UpsertRow[]>(UPSERT_SQL, params)
+    rows = await em.getConnection().execute<UpsertRow[]>(UPSERT_SQL, params, 'all', em.getTransactionContext())
   }
 
   const row = rows?.[0]
