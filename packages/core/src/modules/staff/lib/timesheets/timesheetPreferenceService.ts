@@ -79,21 +79,41 @@ export async function loadTimesheetPreference(
  * index predicate (`WHERE deleted_at IS NULL`) because Postgres only infers a
  * partial unique index when the statement restates it.
  */
+const UPSERT_SQL = `INSERT INTO staff_timesheet_preferences
+       (tenant_id, organization_id, staff_member_id, last_project_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, now(), now())
+     ON CONFLICT (organization_id, tenant_id, staff_member_id) WHERE deleted_at IS NULL
+     DO UPDATE SET last_project_id = EXCLUDED.last_project_id, updated_at = now()
+     RETURNING last_project_id, updated_at`
+
+const UNIQUE_VIOLATION = '23505'
+
+function isUniqueViolation(err: unknown): boolean {
+  return (err as { code?: unknown })?.code === UNIQUE_VIOLATION
+}
+
 export async function saveTimesheetPreference(
   em: EntityManager,
   scope: TimesheetPreferenceScope,
   staffMemberId: string,
   lastProjectId: string | null,
 ): Promise<TimesheetPreference> {
-  const rows = await em.getConnection().execute<Array<{ last_project_id: string | null; updated_at: Date | string }>>(
-    `INSERT INTO staff_timesheet_preferences
-       (tenant_id, organization_id, staff_member_id, last_project_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, now(), now())
-     ON CONFLICT (organization_id, tenant_id, staff_member_id) WHERE deleted_at IS NULL
-     DO UPDATE SET last_project_id = EXCLUDED.last_project_id, updated_at = now()
-     RETURNING last_project_id, updated_at`,
-    [scope.tenantId, scope.organizationId, staffMemberId, lastProjectId],
-  )
+  type UpsertRow = { last_project_id: string | null; updated_at: Date | string }
+  const params = [scope.tenantId, scope.organizationId, staffMemberId, lastProjectId]
+
+  let rows: UpsertRow[] | undefined
+  try {
+    rows = await em.getConnection().execute<UpsertRow[]>(UPSERT_SQL, params)
+  } catch (err) {
+    // Defensive only, with no known trigger. The conflict target infers the
+    // partial unique index, so concurrent writers resolve inside the statement,
+    // and a missing index would surface as 42P10 rather than 23505 — which this
+    // check deliberately re-throws instead of retrying. Kept as the belt-and-
+    // braces guard the spec asks for, and as the one place a 23505 on this table
+    // would be attributable if the schema ever drifts.
+    if (!isUniqueViolation(err)) throw err
+    rows = await em.getConnection().execute<UpsertRow[]>(UPSERT_SQL, params)
+  }
 
   const row = rows?.[0]
   if (!row) return { lastProjectId, updatedAt: null }
