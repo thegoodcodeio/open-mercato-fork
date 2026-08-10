@@ -1,5 +1,6 @@
 "use client"
 
+import * as React from 'react'
 import { apiCall } from '@open-mercato/ui/backend/utils/apiCall'
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 
@@ -85,10 +86,15 @@ export function useTimesheetPreference(staffMemberId: string | null): TimesheetP
   })
   const data = query.data ?? EMPTY_PREFERENCE
 
-  const save = async (lastProjectId: string | null) => {
-    if (!staffMemberId) return
-    await saveTimesheetPreference(queryClient, staffMemberId, lastProjectId)
-  }
+  // Stable identity so callers can list it in a `useCallback` dependency array
+  // without re-creating their handler on every render.
+  const save = React.useCallback(
+    async (lastProjectId: string | null) => {
+      if (!staffMemberId) return
+      await saveTimesheetPreference(queryClient, staffMemberId, lastProjectId)
+    },
+    [queryClient, staffMemberId],
+  )
 
   return {
     ...data,
