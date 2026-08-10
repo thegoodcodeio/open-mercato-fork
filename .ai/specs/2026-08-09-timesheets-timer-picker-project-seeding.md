@@ -263,7 +263,7 @@ Follows the module's existing style — explicit FK id columns, no ORM relations
 | `staff_member_id` | uuid, not null | FK id → `staff_team_members.id`, no ORM relation |
 | `last_project_id` | uuid, nullable | FK id → `staff_time_projects.id`, no ORM relation |
 | `created_at` | timestamptz | |
-| `updated_at` | timestamptz | Required by `optimistic-lock-editable-entities.test.ts` |
+| `updated_at` | timestamptz | Version column for the optimistic-lock contract. **Correction:** `optimistic-lock-editable-entities.test.ts` uses a hand-curated entity map (`staff: ['StaffTeam', 'StaffTeamRole']`) and does not cover this entity, so the column is not *required* by that guard — it is required by the default-ON locking contract itself, since `GET` returns `updatedAt` and `PUT` honours the lock header |
 | `deleted_at` | timestamptz, nullable | |
 
 Indexes:
@@ -287,9 +287,11 @@ A stored `last_project_id` can go stale when a project is deleted, archived, or 
 Two precedents apply, and they are cited for different things:
 
 - **Shape** — `/api/auth/sidebar/preferences` ([route.ts](packages/core/src/modules/auth/api/sidebar/preferences/route.ts)): the platform's per-user singleton-preference route. Hand-written route, zod schemas, `OpenApiRouteDoc`, service module, `updatedAt` in the response.
-- **Write pipeline** — the sibling `my-projects/[projectId]` route ([route.ts:117-150](packages/core/src/modules/staff/api/timesheets/my-projects/[projectId]/route.ts:117)): same module, same self-service shape, and it runs the mutation-guard registry properly.
+- **Write pipeline** — the sibling `my-projects/[projectId]` route ([route.ts:117-150](packages/core/src/modules/staff/api/timesheets/my-projects/[projectId]/route.ts:117)): same module, same self-service shape, and it runs the mutation-guard registry.
 
 Where the two disagree, **`my-projects/[projectId]` wins**. The sidebar route runs no mutation guards and uses a racy load-then-create upsert; neither is a pattern to copy into a new endpoint.
+
+**Correction (implementation review):** `my-projects/[projectId]` is the right *shape* to copy but is not itself complete. It never merges `guardResult.modifiedPayload` into what it persists, and its `runStaffMutationGuardAfterSuccess` call is not wrapped in `try/catch`, so a throwing guard callback fails a request whose write already committed. This route does both correctly, so it is strictly ahead of the precedent it cites. The sibling's gaps are pre-existing and out of scope here — worth their own issue.
 
 ### `GET /api/staff/timesheets/my-preferences`
 
@@ -314,7 +316,9 @@ Where the two disagree, **`my-projects/[projectId]` wins**. The sidebar route ru
 - Response `200`: same shape as `GET`.
 - `400` when `lastProjectId` is a project the caller is not actively assigned to · `401` · `403` · `422` when a mutation guard blocks the write.
 
-Both wrapped in `withAtomicFlush`, both scoped by tenant and organization from the request context. Both export `openApi: OpenApiRouteDoc` per `packages/core/AGENTS.md` → API Routes.
+Both scoped by tenant and organization from the request context. Both export `openApi: OpenApiRouteDoc` per `packages/core/AGENTS.md` → API Routes.
+
+`withAtomicFlush` is **not** used, contrary to this spec's original draft. The rule it enforces is "never run `em.find`/`em.findOne` between scalar mutations and `em.flush()` on the same `EntityManager`". This route never mutates a managed entity and never calls `em.flush()`: the write is a single raw `INSERT … ON CONFLICT` on `em.getConnection()` (see § Upsert atomicity), so there is no flush boundary to make atomic. Wrapping it would add a transaction around one already-atomic statement. Recorded here rather than left as a contradiction between spec and code.
 
 ### Mutation guards (MANDATORY on `PUT`)
 
@@ -421,13 +425,24 @@ New code:
 | [:312](packages/core/src/modules/staff/lib/timesheets-ui/TimerBar.tsx:312) | `min-w-[200px]` arbitrary value | nearest DS scale step (`min-w-52`) |
 | [:324](packages/core/src/modules/staff/lib/timesheets-ui/TimerBar.tsx:324) | `max-h-[200px]` arbitrary value | nearest DS scale step (`max-h-52`) |
 | [:362](packages/core/src/modules/staff/lib/timesheets-ui/TimerBar.tsx:362) | `min-w-[64px]` on the elapsed clock | nearest DS scale step (`min-w-16`) |
-| [:296](packages/core/src/modules/staff/lib/timesheets-ui/TimerBar.tsx:296) vs [:377](packages/core/src/modules/staff/lib/timesheets-ui/TimerBar.tsx:377) | **Same-row size mismatch** — the picker `Button` is `size="sm"` (h-8) while the Start/Stop `IconButton` is `size="default"` (h-9), both direct children of the same `flex items-center` row | Requires a decision — see below |
+| ~~[:296](packages/core/src/modules/staff/lib/timesheets-ui/TimerBar.tsx:296) vs [:377](packages/core/src/modules/staff/lib/timesheets-ui/TimerBar.tsx:377)~~ | ~~**Same-row size mismatch**~~ — **RETRACTED, the measurement was wrong.** See the correction below. | No change; the row was already consistent |
 
-**The size mismatch needs a deliberate call in Phase 1, not a silent claim of compliance.** `packages/ui/AGENTS.md` Critical Primitive Rule 3 is explicit that mixing `sm` with `default`/`icon` in one row is a regression. Phase 1 touches the Start button, which puts the mismatch squarely in scope.
+**Correction — there was no size mismatch, and the recommendation below was wrong.**
 
-Recommendation: **promote the picker to `size="default"`** so the row standardises on h-9, matching the DataTable-toolbar convention the rule cites. Demoting the icon buttons instead would break the shared `FormActionButtons` h-9 standard.
+This spec asserted that the picker `Button size="sm"` was h-8 while the Start/Stop `IconButton size="default"` was h-9, and recommended promoting the picker to `size="default"`. **`Button` and `IconButton` do not share a size scale**, which the original analysis missed:
 
-This visibly changes the timer bar's proportions, so it is a design decision rather than a lint fix: raise it with the user during Phase 1 and attach a before/after screenshot to the PR. If the user prefers to keep the compact picker, record that as an accepted, documented exception in this section rather than leaving the spec claiming full DS compliance.
+| Primitive | `sm` | `default` | `lg` |
+|---|---|---|---|
+| `Button` ([button.tsx:28-30](packages/ui/src/primitives/button.tsx:28)) | `h-8` (32px) | `h-9` (36px) | `h-10` |
+| `IconButton` ([icon-button.tsx:25-27](packages/ui/src/primitives/icon-button.tsx:25)) | `size-7` | `size-8` (**32px**) | `size-9` (36px) |
+
+[`.ai/ui-components.md:108`](.ai/ui-components.md:108) names this pairing explicitly: *`IconButton size="default"` (h-8) ↔ `Button size="default"` (h-9) — icon-button is one step smaller — use `IconButton size="lg"` (h-9)*.
+
+So the original row — `Button size="sm"` (32px) beside `IconButton size="default"` (32px) — was **already compliant**. Promoting the picker to `size="default"` introduced a 4px mismatch that had not existed, and the `text-xs` override on a now-h-9 control compounded it.
+
+**Resolution (user decision, second pass):** the picker is back at `size="sm"`. The row is uniformly 32px, the `text-xs` override is coherent with `sm` again, and the diff against the base branch on this point is nil. The Start/Stop `IconButton`s are untouched at `size="default"`. Recorded here so the retracted recommendation is not re-applied by a later reader.
+
+The other DS migrations in the table above stand, plus `shadow-md` → `shadow-lg` on the dropdown surface ([`.ai/ds-rules.md:208`](.ai/ds-rules.md:208) — popover surfaces take `shadow-lg`), which sits on a line this change already edited.
 
 Confirm each replacement against [`.ai/ds-rules.md`](.ai/ds-rules.md) before committing; the suggested steps are nearest-neighbour, not verified pixel-identical.
 
@@ -620,7 +635,7 @@ Widget seed-race coverage: a deliberate `<select>` change made *before* the pref
 | root | Non-`CrudForm` **client** writes wrapped in `useGuardedMutation` | Deviation — documented | The timer start already is; the preference `PUT` is a non-user-initiated side effect that must not fail the start, so it is deliberately outside the client wrapper |
 | `packages/core` | Custom write routes MUST run the **server** mutation-guard registry | Compliant | `runStaffMutationGuards` + `modifiedPayload` + `runStaffMutationGuardAfterSuccess` on `PUT`; see § Mutation guards. Distinct from the row above — see the table in § Optimistic Locking |
 | `packages/core` | Concurrent writes must not corrupt or 500 | Compliant | Atomic upsert with a partial-index-aware conflict target; `TC-STAFF-040` |
-| `packages/ui` | Same-row buttons share `size` | Decision required in Phase 1 | Picker `sm` vs Start `default`; recommendation and escalation recorded in § Design System compliance |
+| `packages/ui` | Same-row buttons share `size` | Compliant | Row is uniformly 32px: picker `Button size="sm"` (h-8) beside Start/Stop `IconButton size="default"` (size-8). The spec's original "mismatch" was a misreading of the two primitives' scales — retracted in § Design System compliance |
 | root | No `any` | Compliant | Resolver and hook are fully typed |
 | root | `pageSize` ≤ 100 | N/A | No list endpoint added |
 | `packages/core` | API routes export `openApi` | Compliant | Both methods |
@@ -634,7 +649,7 @@ Widget seed-race coverage: a deliberate `<select>` change made *before* the pref
 | `.ai/qa` | Self-contained fixtures, cleanup in `finally` | Compliant | § Testing Strategy |
 | `.ai/specs` | Naming `{YYYY-MM-DD}-{kebab-case}.md`, no `SPEC-*` prefix | Compliant | This file |
 | checklist §2 | DI wiring specified | Compliant | Plain functional module, no registration — rationale in § Service placement and DI |
-| checklist §3 | Injection vectors parameterized | Compliant | MikroORM `em` + `findOneWithDecryption`; no raw SQL, no string interpolation |
+| checklist §3 | Injection vectors parameterized | Compliant | Reads use `findOneWithDecryption`. The upsert **is** raw SQL (§ Upsert atomicity) but is fully parameterized — tenant, organization, member and project ids all travel as bind parameters, never interpolated. Pinned by a SQL-shape test asserting no id appears in the statement text |
 | checklist §3 | XSS on user-rendered content | N/A | Only a UUID and existing project names cross the boundary; both render through React text nodes, no raw HTML |
 | checklist §3 | Encoding for URLs / JSON | Compliant | No dynamic path segments; `PUT` body is JSON validated by zod |
 | checklist §3 | Secrets excluded from logs and responses | Compliant | The failed-write log records the error only; the entity holds no secret |
@@ -678,9 +693,22 @@ Branch `feat/3750-timer-picker-project-seeding`, based on `fix/2609-timer-stop-s
 
 | Phase | Status | Notes |
 |---|---|---|
-| Phase 1 — disabled Start hint | **Complete** | Tooltip + `aria-describedby` + sr-only hint; all listed DS migrations plus `z-50` → `z-dropdown`. Picker promoted to `size="default"` (user decision). Unit tests green; `TC-STAFF-032` written, not yet executed. |
-| Phase 2 — shared preference + seeding | **Code complete, unverified** | Entity, migration, validator, service, `GET`/`PUT` route, hook, resolver, seeding effect, persist-on-start all landed. 28 unit tests green. `TC-STAFF-033`–`036`, `040`, `041` and the route-level guard tests **not yet written**. |
-| Phase 3 — dashboard widget unification | **Not started** | — |
+| Phase 1 — disabled Start hint | **Complete** | Tooltip + `aria-describedby` + sr-only hint; all listed DS migrations plus `z-50` → `z-dropdown` and `shadow-md` → `shadow-lg`. **Picker size reverted to `size="sm"`** after the DS review showed the spec's h-8/h-9 premise was wrong and the promotion had *created* a mismatch — see § Design System compliance. Unit tests green; `TC-STAFF-032` written, **not yet executed** — no integration environment was available in this session. |
+| Phase 2 — shared preference + seeding | **Complete** | Entity, migration, validator, service, `GET`/`PUT` route, hook, resolver, seeding effect, persist-on-start. Route-level guard tests and upsert SQL-shape tests written and green. Retry-once-on-unique-violation added (was specified at § Upsert atomicity but missing from the first pass). `TC-STAFF-033`–`038`, `040` written, **not yet executed**. |
+| Phase 3 — dashboard widget unification | **Complete** | Widget repointed at `useTimesheetPreference` with the settled→once→only-if-null seed effect, read-through fallback to `settings.lastProjectId`, dual write on successful start, `@deprecated` on the legacy field, `UPGRADE_NOTES.md` entry. 12 component tests green, including the seed-race and precedence-inversion cases. |
+
+**Test execution status:** every unit and component test in this change has been executed and is green (186 in the timesheets surface; full suite green). **No integration spec in the `TC-STAFF-03x`/`04x` range has been executed** — this session had no running application: `.ai/qa/ephemeral-env.json` was stale (nothing listening on `:5001`) and no dev server was up. The specs are written and discoverable; they must be run before merge.
+
+### Integration coverage decisions
+
+Two test cases were realized differently from the § Testing Strategy table. Both are narrowings and are recorded rather than silently absorbed:
+
+| ID | Specified | Delivered | Why |
+|---|---|---|---|
+| `TC-STAFF-039` | Playwright — legacy fallback hydration | Component test (`widget.client.seeding.test.tsx`) | The legacy value lives in `dashboard_layouts.layout_json` and reaches the widget as a host-injected prop. Driving it end-to-end means provisioning a dashboard layout with the widget enabled — dashboard plumbing that is not the behavior under test. The component test asserts both halves: seeded from the legacy value, and written through to the shared store on the next successful start. |
+| `TC-STAFF-041` | Playwright — in-session organization switch | Hook test (`useTimesheetPreference.scope.test.tsx`) + route test | The risk this case exists for is a **cached React Query entry** served across scopes; that is asserted directly at the hook level (distinct keys, no cross-serving, no unkeyed fetch). The server half — scope re-resolved per request, staff member filtered by `organizationId` — is asserted in the route test. A browser-driven switch additionally needs a second organization, a second staff member and the org-selector cookie flow, for which the repo has **no** integration fixture (32 helpers, none org-switching). |
+
+`TC-STAFF-040` is delivered as an API-level spec (`Promise.all` of two writes) rather than a browser flow: two genuinely simultaneous writes are not reliably orchestrated through a UI harness, and the endpoint is the unit of concurrency.
 
 ### Deviations from the spec, with rationale
 
@@ -689,12 +717,35 @@ Branch `feat/3750-timer-picker-project-seeding`, based on `fix/2609-timer-stop-s
 | Resolve the caller with `getStaffMemberByUserId` | Inline scoped `findOneWithDecryption`, mirroring `my-projects/[projectId]` | That helper takes `tenantId`/`organizationId` but passes them only as a `DecryptionScope`; verified in `packages/shared/src/lib/encryption/find.ts` that the scope is never applied as a query filter. Its query is `WHERE user_id = ?` with no scope predicate, so a user in two organizations gets an arbitrary row — precisely the § Risk Register leakage this spec claims to mitigate. Falls under the spec's own rule that `my-projects/[projectId]` wins. The helper's defect is pre-existing and filed separately. |
 | Prefer MikroORM `em.upsert()` | Explicit parameterized `INSERT … ON CONFLICT … WHERE deleted_at IS NULL` | The spec's own fallback branch. Verified `db:generate` cannot express a partial unique index at all (see below), so relying on the ORM helper to infer one was not viable. |
 | `min-w-52` / `max-h-52` / `min-w-16` | Same | `min-w-16` is exact (64px). The other two are 208px vs 200px — nearest-neighbour, as the spec warned. `min-w-52` has an exact in-repo precedent for a dropdown (`ActionsDropdown.tsx`). |
+| Both handlers wrapped in `withAtomicFlush` | Not used | Nothing to make atomic: no managed-entity mutation, no `em.flush()`, and the write is one raw statement on `em.getConnection()`. Rationale folded into § API Contracts. |
+| Widget precedence is "shared → legacy → null" | Same, plus a presence guard | The candidate is additionally rejected unless it is one of the projects the `<select>` can display, matching the ladder-wide rule that an unmatched id produces a blank selection with an enabled Start button. The spec stated the guard for `TimerBar` and omitted it for the widget; the omission was not deliberate. |
+| `useTimesheetPreference().save` returned inline | Wrapped in `useCallback` | The widget's `handleStart` is a `useCallback`; an unstable `save` in its dependency array would re-create the handler on every render. Behaviour-neutral. |
 
 ### Generator finding
 
 `yarn db:generate` emitted `staff_timesheet_preferences_unique_idx` as a **plain non-unique index**, silently dropping both `unique: true` and `where: 'deleted_at IS NULL'` from the entity declaration. This is load-bearing rather than cosmetic: the upsert's `ON CONFLICT … WHERE deleted_at IS NULL` needs a matching partial unique index to infer, and would otherwise fail at runtime. The migration is hand-corrected, following `Migration20260511112759` which exists solely to apply the same correction to the sibling timesheet tables. The snapshot records the index as `unique: false`, matching how the already-corrected sibling is recorded; a re-run reports `staff: no changes`.
 
 ## Changelog
+
+### 2026-08-09 — implementation complete (Phases 1–3)
+
+- **Phase 3 landed.** The Time Reporting widget now reads the shared preference through `useTimesheetPreference`, seeds asynchronously (settled → once per mount → only while the selection is null), falls back read-through to `settings.lastProjectId`, and dual-writes both stores on a successful start. `TimeReportingSettings.lastProjectId` is `@deprecated` with the deprecation window documented in `UPGRADE_NOTES.md`.
+- **Outstanding Phase 2 tests written**: route-level mutation-guard coverage (guard denial blocks and persists nothing; `modifiedPayload` is what gets written and is re-validated; `afterSuccessCallbacks` run after the write and a throwing callback is logged, not propagated) and an upsert SQL-shape test pinning the `ON CONFLICT … WHERE deleted_at IS NULL` partial-index inference.
+- **Specified-but-missing behaviour implemented**: the retry-once-on-unique-violation guard from § Upsert atomicity was absent from the first pass and is now in place, with tests for the retry, the non-retry of unrelated errors, and propagation when the retry also fails.
+- **Integration specs added**: `TC-STAFF-033`–`038` and `TC-STAFF-040`. Shared fixtures (`getSelfStaffMemberId`, `stopRunningTimers`, `startTimerFixture`, `readTimesheetPreference`, `setTimesheetPreference`) moved into `packages/core/src/helpers/integration/timesheetFixtures.ts` rather than duplicated per spec. **None have been executed** — see § Implementation Status.
+- **Coverage decisions recorded**, not absorbed: `TC-STAFF-039` and `TC-STAFF-041` are delivered as component/hook tests with the reasoning in § Implementation Status.
+- **Pre-implementation audit findings folded in** (fresh-context reviewer): `withAtomicFlush` deviation recorded; the "no raw SQL" compliance row corrected to "raw but parameterized"; the `optimistic-lock-editable-entities.test.ts` justification corrected; the `my-projects/[projectId]` precedent corrected (it does *not* merge `modifiedPayload` and does *not* guard its after-success call — this route is ahead of it).
+- **Known pre-existing gap, out of scope:** `runStaffMutationGuards` (`api/guards.ts`) only runs the bridged legacy guard and never calls `getAllMutationGuardInstances()`, so registry-registered guards from other modules do not see *any* staff custom-route write. Module-wide, not introduced here; the compliance row for that rule should be read as "follows the module's existing helper", not "fully satisfies `packages/core/AGENTS.md` → API Routes". Worth its own issue.
+- **Scope-cohesion re-run in fresh context** (the checklist §1 item the authoring session could not perform) returned a **split** recommendation, against the original self-assessment. Recorded in § Review below. **User decision: keep one PR** — all three phases are complete and green in the same change, so the "Phase 2 without Phase 3" hazard the reviewer warns about never materialises.
+- **Code review (fresh context) and DS review, findings actioned**:
+  - *Minor* — the widget's seed effect latched onto the deprecated legacy value when the active-timer lookup **errored**: `staffMemberId` is null in that state while the query has stopped loading, so the preference wait was skipped and the once-per-mount ref locked the shared store out for the session. Fixed by treating an unresolved member id as not-yet-settled (`if (activeTimerError) return`), with a regression test that was verified to fail without the guard.
+  - *Minor* — the optimistic-lock route test rejected with a plain `Error`, so it asserted `400` and left the documented `409` path unguarded. Now rejects with a real `CrudHttpError(409, …)` and asserts the status plus `optimistic_lock_conflict`.
+  - *DS violation* — the picker size promotion, retracted; see § Design System compliance.
+  - *DS warning* — `shadow-md` → `shadow-lg` on the dropdown surface (a line this change already edited).
+  - *Nits* — corrected the retry-guard comment (its stated soft-delete trigger is not reachable; the guard is defensive with no known trigger) and documented that rung 1 of the resolver is authoritative but deliberately **not** terminal.
+  - Four pre-existing `staff.timesheets.my.*` locale keys referenced from `page.tsx` but present in no locale file were added across all four locales, taking `yarn i18n:check-usage` from red to green. Pre-existing on the base branch, fixed here because the change already edits both `page.tsx` and all four locale files.
+  - `scripts/check-agents-md-budget.mjs:93` had a comparator-less `.sort()` failing the `explicit-sort-comparators` guard on the base branch. Fixed as a one-line drive-by (user decision) so this branch's gate is green; separable if a reviewer wants it pulled out.
+- One code-review finding **not** actioned, deliberately: the reviewer argued the `aria-describedby` on the disabled Start button does not reach assistive technology, since the description sits on a non-focusable `disabled` button while the focusable wrapper span is unnamed. The suggested remedy — swapping `disabled` for `aria-disabled` — changes the control's visual disabled state and its keyboard semantics, which is a design change beyond this spec's Phase 1 scope. Recorded as a follow-up rather than absorbed silently.
 
 ### 2026-08-09 — implementation (Phases 1–2)
 - Phase 1 complete. Picker size decision resolved **in favour of promoting the picker to `size="default"`**, per § Design System compliance's recommendation; the row now standardises on h-9.
@@ -724,3 +775,17 @@ Branch `feat/3750-timer-picker-project-seeding`, based on `fix/2609-timer-stop-s
 - **Medium — Phase 3 coverage.** Upheld. Added the reverse direction (`TC-STAFF-038`), legacy fallback hydration (`TC-STAFF-039`), and — the substantive gap — a definition of the widget's seed effect, which today seeds synchronously from props and would acquire `TimerBar`'s async race on being repointed at a fetched preference.
 - **Low — same-row button size.** Upheld. Picker is `size="sm"`, Start `IconButton` is `size="default"`, same flex row, contrary to `packages/ui/AGENTS.md` Critical Primitive Rule 3. The draft's claim of DS compliance was overstated. Now an explicit Phase 1 decision with a recommendation (promote the picker to `default`) and an escalation path, rather than a silent fix.
 - **Verdict**: Approved with the above folded in. Test range grows from `TC-STAFF-032…037` to `032…041` plus route-level guard tests.
+
+### Review — 2026-08-09 (third pass, pre-implementation audit in fresh context)
+
+- **Reviewer**: Fresh-context agent running `om-pre-implement-spec` against the partially-implemented branch. Read-only.
+- **Verdict**: no Critical findings; no backward-compatibility violation on any of the 13 contract surfaces — the change is additive on every axis (new table, new route URL, new optional prop, new zod schema; no event, spot, DI, ACL, notification or CLI change).
+- **Verified present, not merely claimed**: the mandatory server-side mutation-guard pipeline on `PUT` (guards before persistence, `modifiedPayload` merged into what is written, after-success callbacks run post-write inside a `try/catch`), and the atomic upsert whose conflict target repeats the partial-index predicate.
+- Findings accepted and folded in: the four spec inaccuracies listed in the changelog above, plus the missing retry-once guard.
+- One finding assessed and **not** actioned: a claimed precedence-inversion window in the Phase 3 seed effect, where a legacy value could latch before the shared preference arrives. `staffMemberId` and `isLoading` both derive from the *same* `useActiveTimesheetTimer` query result, so they settle in the same render and the window is not reachable. Rather than argue the point, a regression test now pins it (`widget.client.seeding.test.tsx` → "waits for the shared preference rather than latching onto the legacy value first").
+- **Scope cohesion (fresh context, the checklist §1 item the authoring session was barred from delegating)**: the reviewer's verdict is **split**, contradicting the first pass. Its argument, recorded so the decision is made on the merits rather than by default:
+  - Phase 1 is a UX affordance with its own user story, its own tests, no schema and no API. Its value is *anti-correlated* with Phase 2 — once seeding works, the disabled state Phase 1 explains becomes rare. It already exists as a self-contained commit.
+  - Phases 2 + 3 are one atomic capability, and more tightly than the original spec argued: **shipping Phase 2 without Phase 3 leaves two divergent memory stores** (the widget's `dashboard_layouts.layout_json` and the new `staff_timesheet_preferences`, with no cross-read), which is worse than the pre-change state where there was exactly one. Phase 3 is the second half of one change, not an optional follow-on.
+  - The `$exists` fix (`50cf84394`) is a distinct, upstream-unreported defect that this spec already says must be "called out explicitly rather than buried". A fix needing a disclaimer for why it sits inside a `feature` PR is a candidate for its own `bug` PR.
+  - Cost of not splitting: Phase 1 — a tooltip and four class swaps — inherits Phase 2's migration, new public API surface, `needs-qa` gate and `screenshots` requirement.
+- **Status**: raised with the user, not acted on. The PR strategy (one PR, three phase-shaped commits) was set by the user before implementation began.
