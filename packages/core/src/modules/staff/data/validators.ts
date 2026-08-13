@@ -299,6 +299,16 @@ export const staffTimeEntryStartTimerSchema = z.object({
   notes: z.string().max(2000).optional().nullable(),
 })
 
+export const staffTimeEntryStopTimerSchema = z.object({
+  ...scopedCreateFields,
+  ...scopedUpdateFields,
+})
+
+export const staffTimeEntryStartTimerExistingSchema = z.object({
+  ...scopedCreateFields,
+  ...scopedUpdateFields,
+})
+
 export const staffTimeEntryBulkItemSchema = z.object({
   id: z.string().uuid().optional().nullable(),
   date: z.coerce.date(),
@@ -378,6 +388,8 @@ export const staffMyProjectVisibilityUpdateSchema = z.object({
 export type StaffTimeEntryCreateInput = z.infer<typeof staffTimeEntryCreateSchema>
 export type StaffTimeEntryUpdateInput = z.infer<typeof staffTimeEntryUpdateSchema>
 export type StaffTimeEntryStartTimerInput = z.infer<typeof staffTimeEntryStartTimerSchema>
+export type StaffTimeEntryStopTimerInput = z.infer<typeof staffTimeEntryStopTimerSchema>
+export type StaffTimeEntryStartTimerExistingInput = z.infer<typeof staffTimeEntryStartTimerExistingSchema>
 export type StaffTimeEntryBulkSaveInput = z.infer<typeof staffTimeEntryBulkSaveSchema>
 export type StaffTimeEntrySegmentCreateInput = z.infer<typeof staffTimeEntrySegmentCreateSchema>
 export type StaffTimeEntrySegmentUpdateInput = z.infer<typeof staffTimeEntrySegmentUpdateSchema>
