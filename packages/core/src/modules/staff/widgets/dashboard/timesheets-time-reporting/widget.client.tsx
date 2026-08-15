@@ -80,6 +80,7 @@ const TimeReportingWidget: React.FC<DashboardWidgetComponentProps<TimeReportingS
   const {
     lastProjectId: sharedLastProjectId,
     isLoading: preferenceLoading,
+    error: preferenceError,
     save: savePreference,
   } = preference
 
@@ -155,6 +156,15 @@ const TimeReportingWidget: React.FC<DashboardWidgetComponentProps<TimeReportingS
     // Genuinely no staff member: nothing is coming from the shared store, so the
     // legacy setting is the only memory available.
     if (staffMemberId && preferenceLoading) return
+    // Same guard the TimerBar applies, for the same reason: a failed fetch settles
+    // with `lastProjectId: null`, so falling through to the legacy value here would
+    // latch it for the rest of the mount even after the query recovers. The stakes
+    // are higher on this surface than the symmetry suggests — the TimerBar writes
+    // only the shared store, so a member who starts timers from the timesheets page
+    // has a legacy value that is legitimately stale, and preselecting it invites the
+    // wrong project to be started. An unresolved preference is "not settled yet",
+    // not "no preference"; the honest state is no seed, which costs one click.
+    if (staffMemberId && preferenceError) return
 
     hasSeededRef.current = true
     // Read-through fallback: the shared store wins, the legacy setting covers
@@ -174,6 +184,7 @@ const TimeReportingWidget: React.FC<DashboardWidgetComponentProps<TimeReportingS
     selectedProjectId,
     staffMemberId,
     preferenceLoading,
+    preferenceError,
     sharedLastProjectId,
     hydrated.lastProjectId,
   ])

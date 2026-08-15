@@ -22,7 +22,9 @@ function defer<T>(): Deferred<T> {
 
 let preferenceResponse: { lastProjectId: string | null; updatedAt: string | null }
 let preferenceGate: Deferred<void> | null
+let preferenceFetchFails = false
 let selfLookupFails = false
+let selfLookupHasNoMember = false
 const savedPreferences: Array<string | null> = []
 
 const mockApiCall = jest.fn(async (url: string, init?: { method?: string; body?: string }) => {
@@ -32,12 +34,17 @@ const mockApiCall = jest.fn(async (url: string, init?: { method?: string; body?:
       return { ok: true, status: 200, result: preferenceResponse }
     }
     if (preferenceGate) await preferenceGate.promise
+    if (preferenceFetchFails) return { ok: false, status: 500, result: { error: 'boom' } }
     return { ok: true, status: 200, result: preferenceResponse }
   }
   if (url.includes('/api/staff/team-members/self')) {
     // Drives the active-timer query into its error state: the hook resolves the
     // member through this call and throws when it is not ok.
     if (selfLookupFails) return { ok: false, status: 500, result: { error: 'boom' } }
+    // A successful lookup that resolves no member: the query settles without an
+    // error and `staffMemberId` stays null, which is a different state from the
+    // failure above and must not be conflated with it.
+    if (selfLookupHasNoMember) return { ok: true, status: 200, result: { member: null } }
     return { ok: true, status: 200, result: { member: { id: MEMBER_ID } } }
   }
   if (url.includes('/api/staff/timesheets/time-entries')) {
@@ -106,7 +113,9 @@ describe('TimeReportingWidget shared-preference seeding (#3750 Phase 3)', () => 
     mockApiCall.mockClear()
     savedPreferences.length = 0
     preferenceGate = null
+    preferenceFetchFails = false
     selfLookupFails = false
+    selfLookupHasNoMember = false
     preferenceResponse = { lastProjectId: null, updatedAt: null }
   })
 
@@ -192,6 +201,41 @@ describe('TimeReportingWidget shared-preference seeding (#3750 Phase 3)', () => 
     preferenceGate.resolve()
 
     await waitFor(() => expect(select.value).toBe(SHARED_PROJECT_ID))
+  })
+
+  it('does not seed the legacy value when the preference fetch failed', async () => {
+    // The guard the TimerBar already applies (`TimerBar.seeding.test.tsx` —
+    // "does not seed a lower rung when the preference fetch failed"), carried to
+    // this surface. A failed fetch settles with `lastProjectId: null`, so without
+    // the guard the effect falls through to the legacy value and latches it for
+    // the rest of the mount, even once the query recovers.
+    //
+    // It matters more here than the symmetry suggests: the TimerBar writes only
+    // the shared store, so a member who starts timers from the timesheets page
+    // has a legacy value that is legitimately stale. Preselecting it invites a
+    // start on the wrong project — the harm `resolveSeedProjectId`'s ambiguity
+    // rule exists to prevent. No seed is the honest state; it costs one click.
+    preferenceFetchFails = true
+
+    renderWidget({ lastProjectId: LEGACY_PROJECT_ID })
+
+    const select = await findProjectSelect()
+    await waitFor(() => expect(select).toBeEnabled())
+    expect(select.value).toBe('')
+  })
+
+  it('still seeds from the legacy value when there is no staff member at all', async () => {
+    // The counterpart to the guard above: with no member id the preference query
+    // is disabled and never errors, so the legacy setting remains the only memory
+    // available and must still be honoured. Pinning this keeps the new guard from
+    // being widened into `if (preferenceError) return`, which would silently drop
+    // the fallback the deprecation window exists to serve.
+    selfLookupHasNoMember = true
+
+    renderWidget({ lastProjectId: LEGACY_PROJECT_ID })
+
+    const select = await findProjectSelect()
+    await waitFor(() => expect(select.value).toBe(LEGACY_PROJECT_ID))
   })
 
   it('ignores a remembered project the member can no longer pick', async () => {
