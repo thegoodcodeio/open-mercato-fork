@@ -1,14 +1,22 @@
 import { buildTimeEntryListFilters } from '../timeEntryListFilters'
 
 /**
- * Asserting the filter MAP alone is what let the original #3717 fix ship broken:
- * `{ $ne: null }` looks correct as a data structure, but the query engine renders
- * it as SQL `!= NULL`, which is never true. These helpers mirror the engine's
- * operator dispatch (`packages/core/src/modules/query_index/lib/engine.ts` —
- * `case 'ne'` → `!=`, bare value → `=`, `case 'exists'` → `is not null`/`is null`)
- * so a null-comparison regression fails here instead of only in the browser.
+ * Asserting the filter MAP alone cannot tell `{ $ne: null }` from `{ $exists: true }`,
+ * because the SQL they produce depends on which dispatcher the field resolves to
+ * (`packages/shared/src/lib/query/engine.ts`):
+ *
+ * - `applyColumnOp` — fields backed by a real base column. Null-guarded: `case 'ne'`
+ *   with a `null` value emits `is not null`, `case 'eq'` emits `is null`. Both
+ *   spellings work here.
+ * - `applyIndexDocFilter` — fields resolved from `entity_indexes.doc` because
+ *   `resolveBaseColumn` found no column. NOT null-guarded: `eq`/`ne` emit
+ *   `doc->>'field' = NULL` / `<> NULL`, which are UNKNOWN and match zero rows.
+ *
+ * `case 'exists'` emits `is not null` / `is null` on both. This helper models the
+ * index-doc dispatcher — the strict one — so the filter is pinned to the spelling
+ * that is correct no matter how the field resolves.
  */
-type NullSemantics = 'IS NOT NULL' | 'IS NULL' | 'NEVER MATCHES'
+type NullSemantics = 'IS NOT NULL' | 'IS NULL' | 'UNSAFE ON INDEX-DOC PATH'
 
 function nullSemanticsOf(filter: unknown): NullSemantics {
   if (filter !== null && typeof filter === 'object' && !Array.isArray(filter)) {
@@ -16,12 +24,11 @@ function nullSemanticsOf(filter: unknown): NullSemantics {
     if (entries.length === 1) {
       const [op, value] = entries[0]
       if (op === '$exists') return value ? 'IS NOT NULL' : 'IS NULL'
-      // `$ne: null` → `!= NULL`, `$eq: null` → `= NULL`: UNKNOWN, never true.
-      if ((op === '$ne' || op === '$eq') && value === null) return 'NEVER MATCHES'
+      if ((op === '$ne' || op === '$eq') && value === null) return 'UNSAFE ON INDEX-DOC PATH'
     }
   }
-  // A bare `null` value is dispatched as `eq` → `= NULL`.
-  if (filter === null) return 'NEVER MATCHES'
+  // A bare `null` value is dispatched as `eq`.
+  if (filter === null) return 'UNSAFE ON INDEX-DOC PATH'
   return 'IS NOT NULL'
 }
 
@@ -39,8 +46,6 @@ describe('buildTimeEntryListFilters — running filter (issue #3717)', () => {
   it('renders as IS NOT NULL / IS NULL, never a null equality comparison', () => {
     const filters = buildTimeEntryListFilters({ staffMemberId: 'staff-1', running: 'true' })
 
-    // The regression: both sides silently became `NEVER MATCHES`, so the
-    // TimerBar could not see any running timer and never showed Stop.
     expect(nullSemanticsOf(filters.started_at)).toBe('IS NOT NULL')
     expect(nullSemanticsOf(filters.ended_at)).toBe('IS NULL')
   })

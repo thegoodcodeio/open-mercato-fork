@@ -11,9 +11,13 @@ import type { CrudIndexerConfig } from '@open-mercato/shared/lib/crud/types'
 import { StaffTimeEntry, StaffTimeEntrySegment, StaffTimeProject, type StaffTimeEntrySource } from '../data/entities'
 import { emitStaffEvent } from '../events'
 
-// `staff.timesheet` is the resource alias the time-entries CRUD list route caches
-// under (derived from its `actions.create.commandId`), so side effects and undo
-// must flush that tag or list payloads keep serving pre-write snapshots (#2609).
+// The time-entries CRUD list route caches under `staff.timesheet`. What actually
+// flushes that tag on execute AND undo is the command bus: `deriveResourceFromCommandId`
+// maps every `staff.timesheets.*` id onto it, which is why the ids below keep that
+// prefix (#2609). `cacheAliases` is declared for the `packages/core/AGENTS.md`
+// convention only — no runtime reader consumes `CrudIndexerConfig.cacheAliases` today
+// (the bus reads `buildLog(...).context.cacheAliases`), so do not rely on it to reach
+// a tag the command id cannot derive.
 const timeEntryCrudIndexer: CrudIndexerConfig<StaffTimeEntry> = {
   entityType: 'staff:staff_time_entry',
   cacheAliases: ['staff.timesheet'],
