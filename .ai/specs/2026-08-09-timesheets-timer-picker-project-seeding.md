@@ -53,13 +53,15 @@ Consequence for the design: items (3) and (4) are **one defect** — a missing s
 `GET /api/staff/timesheets/time-entries?staffMemberId=…&running=true&pageSize=50`
 ([useActiveTimesheetTimer.ts:86-90](packages/core/src/modules/staff/lib/timesheets-ui/useActiveTimesheetTimer.ts:86)).
 
-That filter is built by `buildTimeEntryListFilters`. On upstream `develop` it still reads `{ $ne: null }` / bare `null`, which the query engine renders as `started_at != NULL` / `ended_at = NULL` — both UNKNOWN under three-valued logic, matching **zero rows unconditionally**. Upstream therefore never finds a running timer, always reports `activeTimer.projectId === null`, and can neither resume nor seed from one.
+That filter is built by `buildTimeEntryListFilters`. On upstream `develop` it still reads `{ $ne: null }` / bare `null`, and the running-timer lookup matches **zero rows**, so upstream never finds a running timer, always reports `activeTimer.projectId === null`, and can neither resume nor seed from one.
+
+> **Root cause corrected (2026-08-10, on the base branch in `f98f06129`).** An earlier draft of this section said the query engine renders `!= NULL` / `= NULL` on *every* path, both UNKNOWN under three-valued logic. That is too broad. The engine has two paths and they differ: `applyColumnOp` (base columns) null-guards `eq`/`ne` into `IS NULL` / `IS NOT NULL`, so a bare `null` is safe there. `applyIndexDocFilter` — fields resolved out of `entity_indexes.doc` — does **not** null-guard, so there the same spelling renders as `= NULL` / `<> NULL` and matches nothing. `$exists` is the only spelling that is null-safe on both. The observable defect and the fix are unchanged; only the explanation was wrong.
 
 The bug landed in `c573bb7bd` (#3717, overnight timers) on 2026-07-02 — the same day #3750 was filed — which is why the issue describes resume as working.
 
 **Fixed on this fork** in `50cf84394` using `{ $exists: true }` / `{ $exists: false }`, the operators that emit `IS NOT NULL` / `IS NULL`. Verified present at [timeEntryListFilters.ts:60-70](packages/core/src/modules/staff/lib/timesheets/timeEntryListFilters.ts:60); `TC-STAFF-030` gates it. `{ $ne: null }` remains **correct** on the MikroORM path (e.g. inside `start_timer`); only the query-engine path was wrong, and that was its sole occurrence.
 
-**Branch base (MUST):** base this work on `fix/2609-timer-stop-stale-list` (`c2606970c`), or on `feat/timesheets-ux-improvements` once [fork PR #2](https://github.com/thegoodcodeio/open-mercato-fork/pull/2) merges. Branching from upstream `develop` inherits the `$ne: null` bug and Phase 2 will appear broken for unrelated reasons.
+**Branch base (MUST):** originally `fix/2609-timer-stop-stale-list` (`c2606970c`). [Fork PR #2](https://github.com/thegoodcodeio/open-mercato-fork/pull/2) has since merged, so the stack collapsed by one and **the base is now `feat/timesheets-ux-improvements`** — merged in on 2026-08-10. Branching from upstream `develop` still inherits the bug above and Phase 2 will appear broken for unrelated reasons.
 
 **Upstream plan:** fork first, stacked on the branch above. The upstream PR is raised later and carries the whole stack, so it necessarily includes the `$exists` fix from `50cf84394` — the fix is already in this branch's ancestry. That PR's description MUST call the `$exists` fix out explicitly as a distinct defect (currently unreported upstream) rather than burying it as an incidental part of a `feature` change.
 
@@ -689,7 +691,7 @@ This touches `.tsx` under `packages/core/src/modules/staff/`, adds a database ta
 
 ## Implementation Status
 
-Branch `feat/3750-timer-picker-project-seeding`, based on `fix/2609-timer-stop-stale-list` (`c2606970c`).
+Branch `feat/3750-timer-picker-project-seeding`. Originally based on `fix/2609-timer-stop-stale-list` (`c2606970c`); since fork PR #2 merged, **rebased onto `feat/timesheets-ux-improvements` by merge** (`0549f860d`, 2026-08-10). The PR base moves with it.
 
 | Phase | Status | Notes |
 |---|---|---|
@@ -726,6 +728,12 @@ Two test cases were realized differently from the § Testing Strategy table. Bot
 `yarn db:generate` emitted `staff_timesheet_preferences_unique_idx` as a **plain non-unique index**, silently dropping both `unique: true` and `where: 'deleted_at IS NULL'` from the entity declaration. This is load-bearing rather than cosmetic: the upsert's `ON CONFLICT … WHERE deleted_at IS NULL` needs a matching partial unique index to infer, and would otherwise fail at runtime. The migration is hand-corrected, following `Migration20260511112759` which exists solely to apply the same correction to the sibling timesheet tables. The snapshot records the index as `unique: false`, matching how the already-corrected sibling is recorded; a re-run reports `staff: no changes`.
 
 ## Changelog
+
+### 2026-08-10 — base merge (stack collapsed to depth 2)
+
+- Fork PR #2 merged, so `fix/2609-timer-stop-stale-list` is now inside `feat/timesheets-ux-improvements` and this branch sits directly on the latter. Merged in as `0549f860d`; the PR base moves with it.
+- **Duplicate work resolved.** The base independently added the same four `staff.timesheets.my.*` locale keys this branch had added, so all four locale files conflicted. Resolved in favour of the base on every conflicted key (the wordings were equivalent). Resolved hunk by hunk rather than with `--theirs`, which would have silently dropped this branch's own keys — the two `startDisabled*` hints and the `my-preferences` route errors. Verified after: 1170 keys per locale, identical key sets across `en`/`de`/`es`/`pl`, every key from both sides present.
+- **No behavioural change came in.** The other incoming commit corrects two explanatory comments only. `buildTimeEntryListFilters` still emits `$exists: true` / `$exists: false`, so rung 1 of the seed ladder and `TC-STAFF-033` are unaffected. The § Blocking Dependency root cause is updated to the corrected, narrower explanation.
 
 ### 2026-08-09 — implementation complete (Phases 1–3)
 
