@@ -38,7 +38,13 @@ async function fetchTimesheetPreference(): Promise<TimesheetPreference> {
     '/api/staff/timesheets/my-preferences',
   )
   if (!res.ok) {
-    throw new Error('[internal] Failed to load timesheet preference.')
+    // The status has to ride along: the app's shared `shouldRetryQuery` reads it to
+    // skip retries on 400-404. A bare Error hides it, so a 403 ("no staff member
+    // linked") would be retried twice with backoff — and the seed effects block on
+    // `isLoading` for that whole window rather than settling on the honest empty state.
+    throw Object.assign(new Error('[internal] Failed to load timesheet preference.'), {
+      status: res.status,
+    })
   }
   return {
     lastProjectId: getString(res.result?.lastProjectId),
@@ -71,7 +77,11 @@ export async function saveTimesheetPreference(
     body: JSON.stringify({ lastProjectId }),
   })
   if (!res.ok) {
-    throw new Error('[internal] Failed to save timesheet preference.')
+    // Callers swallow this into a `logger.warn`, so the status is the only thing
+    // that distinguishes a rejected project (400) from an outage (500) in the logs.
+    throw Object.assign(new Error('[internal] Failed to save timesheet preference.'), {
+      status: res.status,
+    })
   }
   await queryClient.invalidateQueries({ queryKey: timesheetPreferenceQueryKey(staffMemberId) })
 }
