@@ -996,7 +996,7 @@
   "staff.timesheets.my.noProjects.viewProjects": "Ver proyectos",
   "staff.timesheets.my.project": "Proyecto",
   "staff.timesheets.my.removeRow": "Quitar de la cuadrícula",
-  "staff.timesheets.my.removeRow.confirm": "¿Quitar {projectName} de tu cuadrícula? Puedes volver a agregarlo en cualquier momento con \"+ Agregar fila\".",
+  "staff.timesheets.my.removeRow.confirm": "¿Quitar {projectName} de tu cuadrícula? Puedes volver a agregarlo en cualquier momento con «+ Agregar fila».",
   "staff.timesheets.my.removeRow.error": "No se pudo quitar el proyecto. Inténtalo de nuevo.",
   "staff.timesheets.my.retry": "Reintentar",
   "staff.timesheets.my.save_changes": "Guardar cambios",
