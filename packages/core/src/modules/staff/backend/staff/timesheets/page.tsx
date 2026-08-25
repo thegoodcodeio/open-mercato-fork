@@ -915,7 +915,7 @@ export default function MyTimesheetsPage() {
           <div className="rounded-lg border bg-card p-4">
             <p className="text-sm text-muted-foreground">{t('staff.timesheets.my.status', 'Status')}</p>
             <p className="text-2xl font-semibold">
-              <span className="inline-flex items-center rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-800">
+              <span className="inline-flex items-center rounded-full bg-status-success-bg px-2.5 py-0.5 text-xs font-medium text-status-success-text">
                 {t('staff.timesheets.my.status_open', 'Open')}
               </span>
             </p>
@@ -946,7 +946,7 @@ export default function MyTimesheetsPage() {
             />
             <div className="flex items-center gap-2">
               {hasChanges && (
-                <span className="text-xs text-amber-600 font-medium">
+                <span className="text-xs text-status-warning-text font-medium">
                   {t('staff.timesheets.my.unsaved', 'Unsaved changes')}
                 </span>
               )}
@@ -1086,8 +1086,10 @@ export default function MyTimesheetsPage() {
                               inputMode="decimal"
                               className={`mx-auto block rounded border text-center tabular-nums transition-colors
                                 ${viewMode === 'weekly' ? 'w-12 px-1 py-0.5 text-xs' : 'w-8 px-0 py-1 text-[10px]'}
-                                ${isDirty ? 'border-amber-400 bg-amber-50' : 'border-muted-foreground/20 bg-transparent'}
-                                ${cellMinutes > 0 ? 'font-semibold' : 'text-muted-foreground'}
+                                ${isDirty
+                                  ? 'border-status-warning-border bg-status-warning-bg text-status-warning-text'
+                                  : `border-muted-foreground/20 bg-transparent ${cellMinutes > 0 ? 'text-foreground' : 'text-muted-foreground'}`}
+                                ${cellMinutes > 0 ? 'font-semibold' : ''}
                                 hover:border-muted-foreground/40 focus:border-primary focus:bg-background focus:outline-none`}
                               value={rawText[project.id]?.[dateKey] ?? minutesToDecimal(cellMinutes)}
                               onChange={(e) => handleCellChange(project.id, dateKey, e.target.value)}
