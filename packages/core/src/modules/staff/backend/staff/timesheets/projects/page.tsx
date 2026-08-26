@@ -3,7 +3,8 @@
 import * as React from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import type { ColumnDef, SortingState } from '@tanstack/react-table'
+import type { LegacyColumnDef as ColumnDef } from '@tanstack/react-table/legacy'
+import type { SortingState } from '@tanstack/react-table'
 import { Page, PageBody } from '@open-mercato/ui/backend/Page'
 import { DataTable, withDataTableNamespaces } from '@open-mercato/ui/backend/DataTable'
 import type { FilterDef, FilterValues } from '@open-mercato/ui/backend/FilterOverlay'
@@ -84,6 +85,7 @@ type ProjectsResponse = {
   items?: Array<Record<string, unknown>>
   total?: number
   totalPages?: number
+  totalIsCapped?: boolean
 }
 
 type KpisResponse = PmKpis | CollabKpis
@@ -229,6 +231,7 @@ export default function TimesheetProjectsPage() {
   const [page, setPage] = React.useState(1)
   const [total, setTotal] = React.useState(0)
   const [totalPages, setTotalPages] = React.useState(1)
+  const [totalIsCapped, setTotalIsCapped] = React.useState(false)
   const [sorting, setSorting] = React.useState<SortingState>([{ id: 'updatedAt', desc: true }])
   const [search, setSearch] = React.useState('')
   const [filterValues, setFilterValues] = React.useState<FilterValues>({})
@@ -473,6 +476,7 @@ export default function TimesheetProjectsPage() {
           ? payload.totalPages
           : Math.max(1, Math.ceil(items.length / PAGE_SIZE)),
       )
+      setTotalIsCapped(payload.totalIsCapped === true)
     } catch (error) {
       logger.error('staff.timesheets.projects.list', { err: error })
       flash(labels.errors.load, 'error')
@@ -830,6 +834,7 @@ export default function TimesheetProjectsPage() {
               pageSize: PAGE_SIZE,
               total,
               totalPages,
+              totalIsCapped,
               onPageChange: setPage,
             }}
             rowActions={(row) => (

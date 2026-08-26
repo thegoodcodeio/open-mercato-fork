@@ -8,6 +8,7 @@ import { SortDir } from '@open-mercato/shared/lib/query/types'
 import type { DataEngine } from '@open-mercato/shared/lib/data/engine'
 import { resolveOrganizationScopeForRequest, type OrganizationScope } from '@open-mercato/core/modules/directory/utils/organizationScope'
 import { serializeOperationMetadata } from '@open-mercato/shared/lib/commands/operationMetadata'
+import { getCommandInterceptorHttpRejection } from '@open-mercato/shared/lib/commands/errors'
 import { parseBooleanToken } from '@open-mercato/shared/lib/boolean'
 import {
   runMutationGuards,
@@ -57,6 +58,7 @@ import {
   isCrudCacheEnabled,
   normalizeIdentifierValue,
   normalizeTagSegment,
+  pickFirstIdentifier,
   resolveCrudCache,
 } from './cache'
 import { deriveCrudSegmentTag } from './cache-stats'
@@ -72,6 +74,9 @@ import { parseExtensionHeaders } from '../umes/extension-headers'
 import { createGenericOptimisticLockReader } from './optimistic-lock'
 import { registerOptimisticLockReaderIfAbsent } from './optimistic-lock-store'
 import { createLogger } from '../logger'
+import { isTransientDbError } from '../db/pg-errors'
+import { getTelemetryRuntime } from '../telemetry/runtime'
+import { randomUUID } from 'node:crypto'
 
 type RbacServiceLike = {
   getGrantedFeatures: (userId: string, opts: { tenantId: string | null; organizationId: string | null }) => Promise<string[]>
@@ -79,10 +84,13 @@ type RbacServiceLike = {
 
 const logger = createLogger('shared').child({ component: 'crud' })
 
-function resolveSortParams(queryParams: Record<string, unknown>) {
-  const rawSortField = queryParams.sortField ?? queryParams.sort ?? 'id'
-  const rawSortDir = queryParams.sortDir ?? queryParams.order ?? 'asc'
-  const sortField = typeof rawSortField === 'string' && rawSortField.trim().length > 0 ? rawSortField.trim() : 'id'
+function resolveSortParams(queryParams: Record<string, unknown>, defaultSort?: CrudDefaultSort) {
+  const rawSortField = queryParams.sortField ?? queryParams.sort
+  const requestedSortField =
+    typeof rawSortField === 'string' && rawSortField.trim().length > 0 ? rawSortField.trim() : null
+  const sortField = requestedSortField ?? defaultSort?.field ?? 'id'
+  const rawSortDir =
+    queryParams.sortDir ?? queryParams.order ?? (requestedSortField ? 'asc' : defaultSort?.dir ?? 'asc')
   const normalizedDir = typeof rawSortDir === 'string' ? rawSortDir.trim().toLowerCase() : 'asc'
   const sortDir = normalizedDir === 'desc' ? SortDir.Desc : SortDir.Asc
   return { sortField, sortDir }
@@ -190,6 +198,8 @@ export type CrudListCustomFieldDecorator = {
   stripPrefixedKeys?: boolean
 }
 
+export type CrudDefaultSort = { field: string; dir?: 'asc' | 'desc' }
+
 export type ListConfig<TList> = {
   schema: z.ZodType<TList>
   // Optional: use the QueryEngine when entityId + fields are provided.
@@ -200,12 +210,41 @@ export type ListConfig<TList> = {
   entityId?: any
   fields?: any[] | ((query: TList, ctx: CrudCtx) => any[])
   sortFieldMap?: Record<string, any>
+  /**
+   * Sort used when the request carries no `sortField` / `sort` param. The field is
+   * resolved through `sortFieldMap`, so a name the map defines is translated to its
+   * column and an unmapped name is used as the column directly. `dir` only applies
+   * together with the default field — an explicit `sortField` without `sortDir`
+   * still defaults to ascending. Defaults to `{ field: 'id', dir: 'asc' }`, which is
+   * only a meaningful order for sequential ids, never for random UUIDs.
+   *
+   * Applies to the Query Engine list path only (the route must set both `entityId`
+   * and `fields`). The plain-ORM fallback list issues an unordered `find` and
+   * already ignores `sortField` today, so it ignores this too.
+   *
+   * The list schema must keep `sortField` optional for this to take effect — a zod
+   * `.default()` on `sortField` reaches the sort resolver as an explicit request and
+   * pins the order itself.
+   */
+  defaultSort?: CrudDefaultSort
+  /**
+   * Appended as a secondary ascending sort whenever it differs from the resolved
+   * primary sort, so rows sharing a primary value keep a stable order across pages
+   * and re-fetches instead of falling back to the database's arbitrary row order.
+   * Applies to explicit sorts too, and is resolved through `sortFieldMap` and gated
+   * on the Query Engine path exactly like `defaultSort`.
+   */
+  tiebreakSortField?: string
   buildFilters?: (query: TList, ctx: CrudCtx) => Where<any> | Promise<Where<any>>
   transformItem?: (item: any) => any
   allowCsv?: boolean
+  // The function forms mirror `fields` above: a route whose export columns depend
+  // on per-request state (for example custom-field definitions discovered in
+  // `beforeList`) MUST resolve them from `ctx` rather than from module-level
+  // mutable state, which would bleed one tenant's columns into another's export.
   csv?: {
-    headers: string[]
-    row: (item: any) => (string | number | boolean | null | undefined)[]
+    headers: string[] | ((query: TList, ctx: CrudCtx) => string[])
+    row: (item: any, ctx: CrudCtx) => (string | number | boolean | null | undefined)[]
     filename?: string
   }
   export?: CrudExportOptions
@@ -228,6 +267,8 @@ export type ListConfig<TList> = {
    * filters/sorts, `search_tokens` fulltext filtering, and vector-search branches are bypassed.
    */
   omitAutomaticTenantOrgScope?: boolean
+  /** When true, skip server-side CRUD GET cache for this list (avoids stale empty payloads after mutations). */
+  disableListCache?: boolean
 }
 
 export type CrudExportColumnConfig = {
@@ -248,6 +289,7 @@ const DEFAULT_EXPORT_FORMATS: CrudExportFormat[] = ['csv', 'json', 'xml', 'markd
 const DEFAULT_EXPORT_BATCH_SIZE = 1000
 const MIN_EXPORT_BATCH_SIZE = 100
 const MAX_EXPORT_BATCH_SIZE = 10000
+const EXPORT_MAX_PAGES = 1000
 
 type ColumnResolver = {
   field: string
@@ -311,14 +353,20 @@ function buildExportFromColumns(items: any[], columnsConfig: CrudExportColumnCon
   }
 }
 
-function buildExportFromCsv(items: any[], csv: NonNullable<ListConfig<any>['csv']>): PreparedExport {
+function buildExportFromCsv(
+  items: any[],
+  csv: NonNullable<ListConfig<any>['csv']>,
+  query: unknown,
+  ctx: CrudCtx,
+): PreparedExport {
   const used = new Set<string>()
-  const columns = csv.headers.map((header, idx) => ({
+  const resolvedHeaders = typeof csv.headers === 'function' ? csv.headers(query as any, ctx) : csv.headers
+  const columns = resolvedHeaders.map((header, idx) => ({
     field: sanitizeFieldName(header || `column_${idx + 1}`, used, idx),
     header: header || `Column ${idx + 1}`,
   }))
   const rows = items.map((item) => {
-    const values = csv.row(item) || []
+    const values = csv.row(item, ctx) || []
     const row: Record<string, unknown> = {}
     columns.forEach((column, idx) => {
       row[column.field] = values[idx]
@@ -341,12 +389,12 @@ function buildDefaultExport(items: any[]): PreparedExport {
   }
 }
 
-function prepareExportData(items: any[], list: ListConfig<any>): PreparedExport {
+function prepareExportData(items: any[], list: ListConfig<any>, query: unknown, ctx: CrudCtx): PreparedExport {
   if (list.export?.columns && list.export.columns.length > 0) {
     return buildExportFromColumns(items, list.export.columns)
   }
   if (list.csv) {
-    return buildExportFromCsv(items, list.csv)
+    return buildExportFromCsv(items, list.csv, query, ctx)
   }
   const prepared = buildDefaultExport(items)
   return {
@@ -548,19 +596,61 @@ function attachOperationHeader(res: Response, logEntry: any) {
   return res
 }
 
-function handleError(err: unknown): Response {
+// An inbound `x-request-id` is caller-controlled, so it is only reused when it still
+// looks like an id. `Headers.get()` yields '' for an empty or whitespace-only header —
+// which `??` would not replace — and an unbounded value carrying spaces or `=` would
+// forge fields in the unquoted `key=value` log line this id exists to be read from.
+const INBOUND_REQUEST_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/
+
+function resolveRequestId(request?: Request): string {
+  const inbound = request?.headers.get('x-request-id')?.trim()
+  if (inbound && INBOUND_REQUEST_ID_PATTERN.test(inbound)) return inbound
+  return randomUUID()
+}
+
+function handleError(err: unknown, request?: Request): Response {
   if (err instanceof Response) return err
   if (isCrudHttpError(err)) return json(err.body, { status: err.status })
+  // A command interceptor that blocked with an explicit status is a deliberate business
+  // rejection, not a server fault — surface its status and message instead of a generic 500.
+  // Without a usable status the error falls through to the historical handling below (issue #5045).
+  const interceptorRejection = getCommandInterceptorHttpRejection(err)
+  if (interceptorRejection) {
+    return json(interceptorRejection.body, { status: interceptorRejection.status })
+  }
   if (err instanceof z.ZodError) return json({ error: 'Invalid input', details: err.issues }, { status: 400 })
+  if (isTransientDbError(err)) {
+    // Transient DB unavailability (pool exhausted, `max_connections` reached, DB
+    // restarting) is retryable — surface a 503 with a Retry-After hint instead of
+    // a generic 500 so clients back off and retry once the DB recovers.
+    logger.warn('Transient DB failure during CRUD handler', {
+      message: err instanceof Error ? err.message : undefined,
+    })
+    return json(
+      { error: 'Service temporarily unavailable' },
+      { status: 503, headers: { 'Retry-After': '2' } },
+    )
+  }
 
+  // Unexpected exceptions still collapse into a generic 500 for the client (no internal
+  // detail leaked), but a requestId ties that response to this log line and to whatever
+  // reaches APM, so a client/support ticket citing it can be correlated with server-side
+  // detail (issue #5608).
   const message = err instanceof Error ? err.message : undefined
   const stack = err instanceof Error ? err.stack : undefined
-  logger.error('Unexpected CRUD error', { message, stack, err })
+  const errorName = err instanceof Error ? err.name : undefined
+  const requestId = resolveRequestId(request)
+  logger.error('Unexpected CRUD error', { message, stack, err, requestId })
+  getTelemetryRuntime()?.reportError(err, {
+    module: 'crud',
+    attributes: { requestId, errorName },
+  })
   const body: Record<string, unknown> = {
     error: 'Internal server error',
     message: 'Something went wrong. Please try again later.',
+    requestId,
   }
-  return json(body, { status: 500 })
+  return json(body, { status: 500, headers: { 'x-request-id': requestId } })
 }
 
 const LIFECYCLE_ACTION_MAP: Record<string, { before: string; after: string }> = {
@@ -913,6 +1003,12 @@ function buildCrudCacheKey(
     `tenant:${normalizeTagSegment(ctx.auth?.tenantId ?? null)}`,
     `selectedOrg:${normalizeTagSegment(ctx.selectedOrganizationId ?? null)}`,
     `scope:${scopeSegment}`,
+    // List payloads can vary per caller identity beyond tenant/org scope:
+    // buildFilters may narrow by ctx.auth (e.g. ?mine=true), before-interceptor
+    // query rewrites are feature-gated per user, and afterList/after-interceptor
+    // output is embedded in the stored payload — so entries MUST be partitioned
+    // per actor (API key or user), never shared across identities.
+    `user:${normalizeTagSegment((ctx.auth?.keyId ?? ctx.auth?.sub) ?? null)}`,
     `query:${serializeSearchParams(url.searchParams)}`,
   ]
   // The cached list payload already embeds enricher output (enrichment runs before
@@ -1461,7 +1557,8 @@ export function makeCrudRoute<TCreate = any, TUpdate = any, TList = any>(opts: C
       const exportFullRequested = exportRequested && (exportScope === 'full' || parseBooleanToken((queryParams as any).full) === true)
       profiler.mark('export_configured', { exportRequested, exportFullRequested })
 
-      const cacheEnabled = isCrudCacheEnabled() && !exportRequested
+      const cacheEnabled =
+        isCrudCacheEnabled() && !exportRequested && !opts.list?.disableListCache
       const cacheTimerStart = cacheEnabled && isCrudCacheDebugEnabled()
         ? process.hrtime.bigint()
         : null
@@ -1652,10 +1749,21 @@ export function makeCrudRoute<TCreate = any, TUpdate = any, TList = any>(opts: C
         profiler.mark('query_engine_prepare')
         const qe = (ctx.container.resolve('queryEngine') as QueryEngine)
         profiler.mark('query_engine_resolved')
-        const { sortField: sortFieldRaw, sortDir: sortDirRaw } = resolveSortParams(queryParams as Record<string, unknown>)
-        const mappedSortField = (opts.list.sortFieldMap && opts.list.sortFieldMap[sortFieldRaw]) || sortFieldRaw
-        const sortField = typeof mappedSortField === 'string' ? normalizeSortFieldSelector(mappedSortField) : mappedSortField
+        const sortFieldMap = opts.list.sortFieldMap
+        const resolveSortSelector = (field: string) => {
+          const mapped = (sortFieldMap && sortFieldMap[field]) || field
+          return typeof mapped === 'string' ? normalizeSortFieldSelector(mapped) : mapped
+        }
+        const { sortField: sortFieldRaw, sortDir: sortDirRaw } = resolveSortParams(
+          queryParams as Record<string, unknown>,
+          opts.list.defaultSort,
+        )
+        const sortField = resolveSortSelector(sortFieldRaw)
         const sort: Sort[] = [{ field: sortField as any, dir: sortDirRaw } as any]
+        if (opts.list.tiebreakSortField) {
+          const tiebreakField = resolveSortSelector(opts.list.tiebreakSortField)
+          if (tiebreakField !== sortField) sort.push({ field: tiebreakField as any, dir: SortDir.Asc } as any)
+        }
         const page: Page = exportRequested
           ? { page: 1, pageSize: exportPageSize }
           : { page: requestedPage, pageSize: requestedPageSize }
@@ -1783,13 +1891,17 @@ export function makeCrudRoute<TCreate = any, TUpdate = any, TList = any>(opts: C
           const initialExportItems = exportFullRequested
             ? rawItems.map(normalizeFullRecordForExport)
             : transformedItems
-          let exportItems = [...initialExportItems]
-          if (total > exportItems.length) {
-            const exportPageSizeNumber = typeof page.pageSize === 'number' ? page.pageSize : exportPageSize
+          const exportItems = [...initialExportItems]
+          const exportPageSizeNumber = typeof page.pageSize === 'number' ? page.pageSize : exportPageSize
+          // Short-page termination: `total` is a display value, not a loop bound — it can
+          // under-report (capped counts) or drift while rows are inserted/deleted mid-export.
+          // Keep fetching while pages come back full; fail closed at the page ceiling rather
+          // than serializing a partial export.
+          if (rawItems.length >= exportPageSizeNumber) {
             const queryBase: any = { ...queryOpts }
             delete queryBase.page
             let nextPage = 2
-            while (exportItems.length < total) {
+            for (;;) {
               profiler.mark('export_next_page_request', { page: nextPage })
               const nextRes = await qe.query(opts.list.entityId as any, {
                 ...queryBase,
@@ -1804,13 +1916,16 @@ export function makeCrudRoute<TCreate = any, TUpdate = any, TList = any>(opts: C
                 ? nextItemsRaw.map(normalizeFullRecordForExport)
                 : nextTransformed
               exportItems.push(...nextExportItems)
-              if (nextExportItems.length < exportPageSizeNumber) break
+              if (nextItemsRaw.length < exportPageSizeNumber) break
+              if (nextPage >= EXPORT_MAX_PAGES) {
+                throw new Error(`[internal] export exceeded ${EXPORT_MAX_PAGES} pages; refusing to return a partial export`)
+              }
               nextPage += 1
             }
           }
           const prepared = exportFullRequested
             ? { columns: ensureColumns(exportItems), rows: exportItems }
-            : prepareExportData(exportItems, opts.list)
+            : prepareExportData(exportItems, opts.list, validated as any, ctx)
           const fallbackBase = `${opts.events?.entity || resourceKind || 'list'}${exportFullRequested ? '_full' : ''}`
           const filename = finalizeExportFilename(opts.list, requestedExport, fallbackBase)
           const serialized = serializeExport(prepared, requestedExport)
@@ -1851,6 +1966,7 @@ export function makeCrudRoute<TCreate = any, TUpdate = any, TList = any>(opts: C
           page: page.page || requestedPage,
           pageSize: page.pageSize || requestedPageSize,
           totalPages: Math.ceil(res.total / (Number(page.pageSize) || 1)),
+          ...(res.meta?.listCountCapWarning ? { totalIsCapped: true } : {}),
           ...(res.meta ? { meta: res.meta } : {}),
         }
         await opts.hooks?.afterList?.(payload, { ...ctx, query: validated as any })
@@ -2012,7 +2128,7 @@ export function makeCrudRoute<TCreate = any, TUpdate = any, TList = any>(opts: C
         const exportItems = exportFullRequested ? list.map(normalizeFullRecordForExport) : list
         const prepared = exportFullRequested
           ? { columns: ensureColumns(exportItems), rows: exportItems }
-          : prepareExportData(exportItems, opts.list)
+          : prepareExportData(exportItems, opts.list, validated as any, ctx)
         const fallbackBase = `${opts.events?.entity || resourceKind || 'list'}${exportFullRequested ? '_full' : ''}`
         const filename = finalizeExportFilename(opts.list, requestedExport, fallbackBase)
         const serialized = serializeExport(prepared, requestedExport)
@@ -2072,7 +2188,7 @@ export function makeCrudRoute<TCreate = any, TUpdate = any, TList = any>(opts: C
       return response
     } catch (e) {
       finishProfile({ result: 'error' })
-      return handleError(e)
+      return handleError(e, request)
     }
   }
 
@@ -2137,6 +2253,31 @@ export function makeCrudRoute<TCreate = any, TUpdate = any, TList = any>(opts: C
           }
         }
 
+        // Mutation guard registry — command path (mirrors the direct create branch)
+        const createCmdUserFeatures = await resolveUserFeatures(ctx)
+        const { allGuards: createCmdAllGuards } = collectAndRunGuards(ctx.container)
+        let createCmdGuardAfterCallbacks: Array<{ guard: MutationGuard; metadata: Record<string, unknown> | null }> = []
+        if (createCmdAllGuards.length && ctx.auth.tenantId) {
+          const guardResult = await runMutationGuards(createCmdAllGuards, {
+            tenantId: ctx.auth.tenantId,
+            organizationId: ctx.selectedOrganizationId ?? ctx.auth.orgId ?? null,
+            userId: ctx.auth.sub,
+            resourceKind,
+            resourceId: null,
+            operation: 'create',
+            requestMethod: request.method,
+            requestHeaders: request.headers,
+            mutationPayload: input && typeof input === 'object' ? (input as Record<string, unknown>) : null,
+          }, { userFeatures: createCmdUserFeatures ?? [] })
+          if (!guardResult.ok) {
+            return json(guardResult.errorBody ?? { error: 'Operation blocked by guard' }, { status: guardResult.errorStatus ?? 422 })
+          }
+          if (guardResult.modifiedPayload && typeof input === 'object' && input) {
+            input = { ...input as Record<string, unknown>, ...guardResult.modifiedPayload }
+          }
+          createCmdGuardAfterCallbacks = guardResult.afterSuccessCallbacks
+        }
+
         const baseMetadata: CommandLogMetadata = {
           tenantId: ctx.auth?.tenantId ?? null,
           organizationId: ctx.selectedOrganizationId ?? ctx.auth.orgId ?? null,
@@ -2179,6 +2320,22 @@ export function makeCrudRoute<TCreate = any, TUpdate = any, TList = any>(opts: C
         const status = action.status ?? 201
         const response = json(resolvedPayload, { status })
         attachOperationHeader(response, logEntry)
+        const commandResultId = pickFirstIdentifier(
+          (result as Record<string, unknown> | null | undefined)?.id,
+          (resolvedPayload as Record<string, unknown> | null | undefined)?.id,
+        )
+        if (createCmdGuardAfterCallbacks.length && ctx.auth.tenantId && commandResultId) {
+          await runGuardAfterSuccessCallbacks(createCmdGuardAfterCallbacks, {
+            tenantId: ctx.auth.tenantId,
+            organizationId: ctx.selectedOrganizationId ?? ctx.auth.orgId ?? null,
+            userId: ctx.auth.sub,
+            resourceKind,
+            resourceId: commandResultId,
+            operation: 'create',
+            requestMethod: request.method,
+            requestHeaders: request.headers,
+          })
+        }
         // Note: side effects (events + indexing) are already flushed by CommandBus.execute()
         // via flushCrudSideEffects(). Calling markCommandResultForIndexing here would cause
         // duplicate event emissions.
@@ -2282,6 +2439,7 @@ export function makeCrudRoute<TCreate = any, TUpdate = any, TList = any>(opts: C
               organizationId: targetOrgId,
               tenantId: writeTenantId,
               values,
+              notify: false,
             })
           }
         }
@@ -2344,7 +2502,7 @@ export function makeCrudRoute<TCreate = any, TUpdate = any, TList = any>(opts: C
       payload = await enrichSingleRecord(payload, ctx)
       return json(payload, { status: 201 })
     } catch (e) {
-      return handleError(e)
+      return handleError(e, request)
     }
   }
 
@@ -2419,6 +2577,10 @@ export function makeCrudRoute<TCreate = any, TUpdate = any, TList = any>(opts: C
         const updateUserFeatures = await resolveUserFeatures(ctx)
         const { allGuards: updateAllGuards } = collectAndRunGuards(ctx.container)
         let cmdUpdateGuardAfterCallbacks: Array<{ guard: MutationGuard; metadata: Record<string, unknown> | null }> = []
+        // Commands whose mapInput wraps the payload (e.g. `{ body }`) intentionally
+        // null candidateId and OPT OUT of row-level guards, leaving the command-level
+        // optimistic-lock check as the sole guard — a documented contract, see
+        // apps/docs/docs/framework/data-integrity/concurrency-locking.mdx.
         if (updateAllGuards.length && ctx.auth.tenantId && candidateId) {
           const guardResult = await runMutationGuards(updateAllGuards, {
             tenantId: ctx.auth.tenantId,
@@ -2615,6 +2777,7 @@ export function makeCrudRoute<TCreate = any, TUpdate = any, TList = any>(opts: C
               organizationId: targetOrgId,
               tenantId: writeTenantId,
               values,
+              notify: false,
             })
           }
         }
@@ -2677,7 +2840,7 @@ export function makeCrudRoute<TCreate = any, TUpdate = any, TList = any>(opts: C
       }
       return json(payload)
     } catch (e) {
-      return handleError(e)
+      return handleError(e, request)
     }
   }
 
@@ -2718,6 +2881,7 @@ export function makeCrudRoute<TCreate = any, TUpdate = any, TList = any>(opts: C
           request,
           method: 'DELETE',
           body: interceptorInput,
+          query: raw.query,
         })
         if (beforeInterceptors.errorResponse) return beforeInterceptors.errorResponse
         interceptorRequestPayload = beforeInterceptors.requestPayload
@@ -2842,7 +3006,7 @@ export function makeCrudRoute<TCreate = any, TUpdate = any, TList = any>(opts: C
         request,
         method: 'DELETE',
         body: idFrom === 'query' ? undefined : ({ id } as Record<string, unknown>),
-        query: idFrom === 'query' ? ({ id } as Record<string, unknown>) : undefined,
+        query: idFrom === 'query' ? Object.fromEntries(url.searchParams.entries()) : undefined,
       })
       if (beforeInterceptors.errorResponse) return beforeInterceptors.errorResponse
       interceptorRequestPayload = beforeInterceptors.requestPayload
@@ -2965,7 +3129,7 @@ export function makeCrudRoute<TCreate = any, TUpdate = any, TList = any>(opts: C
       }
       return json(payload)
     } catch (e) {
-      return handleError(e)
+      return handleError(e, request)
     }
   }
 

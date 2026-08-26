@@ -23,6 +23,7 @@ import {
 import { resolveTranslations } from "@open-mercato/shared/lib/i18n/server";
 import { resolveNotificationService } from "../../notifications/lib/notificationService";
 import { buildFeatureNotificationFromType } from "../../notifications/lib/notificationBuilder";
+import { emitSalesEvent } from "../events";
 import { setRecordCustomFields } from "@open-mercato/core/modules/entities/lib/helpers";
 import { loadCustomFieldValues } from "@open-mercato/shared/lib/crud/custom-fields";
 import { normalizeCustomFieldValues } from "@open-mercato/shared/lib/custom-fields/normalize";
@@ -75,6 +76,8 @@ import {
   quoteLineCreateSchema,
   quoteAdjustmentCreateSchema,
   orderCreateSchema,
+  ORDER_PAYMENT_LEDGER_WARNING_CODE,
+  resolveSuppliedOrderPaymentLedgerFields,
   orderLineCreateSchema,
   orderAdjustmentCreateSchema,
   invoiceCreateSchema,
@@ -86,6 +89,7 @@ import {
   type QuoteLineCreateInput,
   type QuoteAdjustmentCreateInput,
   type OrderCreateInput,
+  type OrderPaymentLedgerWarning,
   type OrderLineCreateInput,
   type OrderAdjustmentCreateInput,
   type InvoiceCreateInput,
@@ -142,6 +146,7 @@ import type { TranslateWithFallbackFn } from "@open-mercato/shared/lib/i18n/tran
 import { createLogger } from '@open-mercato/shared/lib/logger'
 
 const logger = createLogger('sales')
+let warnedDeprecatedOrderPaymentLedgerInput = false
 
 // CRUD events configuration for workflow triggers
 const orderCrudEvents: CrudEventsConfig<SalesOrder> = {
@@ -579,6 +584,11 @@ const addressSnapshotSchema = z
   .nullable()
   .optional();
 
+// Mirrors the create schema's `decimal({ min: 0 })` (data/validators.ts). `null`
+// comes first in the union below because the coercion accepts it — `Number(null)`
+// is 0 — and would turn a clear into a written zero.
+const exchangeRateSchema = z.coerce.number().min(0);
+
 export const documentUpdateSchema = z
   .object({
     id: z.string().uuid(),
@@ -589,9 +599,21 @@ export const documentUpdateSchema = z
     customerReference: z.string().nullable().optional(),
     externalReference: z.string().nullable().optional(),
     comment: z.string().nullable().optional(),
+    // Same names and limits as the create schema (data/validators.ts), so a
+    // caller can send one payload shape to create and update. Nullable here
+    // because an update — unlike a create — has an existing value to clear.
+    comments: z.string().trim().max(4000).nullable().optional(),
+    internalNotes: z.string().trim().max(4000).nullable().optional(),
     orderNumber: z.string().trim().min(1).max(191).optional(),
     quoteNumber: z.string().trim().min(1).max(191).optional(),
     currencyCode: currencyCodeSchema.optional(),
+    // Order-only columns — SalesQuote declares none of them. Declared here
+    // because the create schema declares them and a caller reusing its create
+    // payload on an update otherwise lost them silently; `applyDocumentUpdate`
+    // rejects each with a 400 on a quote rather than dropping it.
+    exchangeRate: z.union([z.null(), exchangeRateSchema]).optional(),
+    paymentStatusEntryId: z.string().uuid().nullable().optional(),
+    fulfillmentStatusEntryId: z.string().uuid().nullable().optional(),
     channelId: z.string().uuid().nullable().optional(),
     statusEntryId: z.string().uuid().nullable().optional(),
     placedAt: z.union([dateOnlySchema, z.null()]).optional(),
@@ -623,6 +645,9 @@ export const documentUpdateSchema = z
       input.expectedDeliveryAt !== undefined ||
       input.channelId !== undefined ||
       input.statusEntryId !== undefined ||
+      input.exchangeRate !== undefined ||
+      input.paymentStatusEntryId !== undefined ||
+      input.fulfillmentStatusEntryId !== undefined ||
       input.shippingAddressId !== undefined ||
       input.billingAddressId !== undefined ||
       input.customerEntityId !== undefined ||
@@ -632,6 +657,8 @@ export const documentUpdateSchema = z
       input.customerReference !== undefined ||
       input.externalReference !== undefined ||
       input.comment !== undefined ||
+      input.comments !== undefined ||
+      input.internalNotes !== undefined ||
       input.orderNumber !== undefined ||
       input.quoteNumber !== undefined ||
       input.shippingAddressSnapshot !== undefined ||
@@ -658,6 +685,41 @@ type DocumentAdjustmentCreateInput =
 function cloneJson<T>(value: T): T {
   if (value === null || value === undefined) return value;
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+/**
+ * Persists document-level custom fields supplied on a create input.
+ *
+ * Order and quote creates used to accept `customFields` at the HTTP boundary
+ * (`splitCustomFieldPayload` folds `cf_*` keys into it) and then drop the values
+ * on the floor, because the create schemas never declared the key and the
+ * handlers never wrote it — only updates did. Callers therefore had to create,
+ * then immediately update, to get custom fields to stick.
+ */
+async function setDocumentCustomFieldsIfSupplied(
+  em: EntityManager,
+  params: {
+    entityId: string;
+    recordId: string;
+    organizationId: string;
+    tenantId: string;
+    customFields: unknown;
+  },
+): Promise<void> {
+  const { customFields } = params;
+  if (customFields === undefined || customFields === null) return;
+  const values =
+    typeof customFields === "object" && !Array.isArray(customFields)
+      ? (customFields as Record<string, unknown>)
+      : {};
+  if (!Object.keys(values).length) return;
+  await setRecordCustomFields(em, {
+    entityId: params.entityId,
+    recordId: params.recordId,
+    organizationId: params.organizationId,
+    tenantId: params.tenantId,
+    values: normalizeCustomFieldValues(values),
+  });
 }
 
 async function resolveCustomerSnapshot(
@@ -856,6 +918,70 @@ function normalizeStatusValue(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
   return trimmed.length ? trimmed : null;
+}
+
+function isConfirmedOrderStatus(status: string | null): boolean {
+  return status === "confirmed";
+}
+
+function isCancelledOrderStatus(status: string | null): boolean {
+  return status === "canceled" || status === "cancelled";
+}
+
+async function emitOrderLifecycleEvent(input: {
+  eventId: "sales.order.confirmed" | "sales.order.cancelled";
+  order: SalesOrder;
+  previousStatus: string | null;
+}): Promise<void> {
+  await emitSalesEvent(input.eventId, {
+    id: input.order.id,
+    orderId: input.order.id,
+    orderNumber: input.order.orderNumber,
+    previousStatus: input.previousStatus,
+    status: normalizeStatusValue(input.order.status),
+    tenantId: input.order.tenantId,
+    organizationId: input.order.organizationId,
+  });
+}
+
+function emitOrderLifecycleEventsForTransition(input: {
+  order: SalesOrder;
+  previousStatus: string | null;
+}): void {
+  const nextStatus = normalizeStatusValue(input.order.status);
+  if (input.previousStatus === nextStatus) return;
+
+  if (isConfirmedOrderStatus(nextStatus)) {
+    void emitOrderLifecycleEvent({
+      eventId: "sales.order.confirmed",
+      order: input.order,
+      previousStatus: input.previousStatus,
+    }).catch((err) => {
+      // Surface as warning so downstream automations (e.g. WMS reservation
+      // subscriber) failing to register/persist their own follow-up state is
+      // observable in logs instead of being silently dropped. The order
+      // status transition itself is already committed at this point.
+      logger.warn("order lifecycle event emit failed", {
+        eventId: "sales.order.confirmed",
+        orderId: input.order.id,
+        err,
+      });
+    });
+  }
+
+  if (isCancelledOrderStatus(nextStatus)) {
+    void emitOrderLifecycleEvent({
+      eventId: "sales.order.cancelled",
+      order: input.order,
+      previousStatus: input.previousStatus,
+    }).catch((err) => {
+      logger.warn("order lifecycle event emit failed", {
+        eventId: "sales.order.cancelled",
+        orderId: input.order.id,
+        err,
+      });
+    });
+  }
 }
 
 function resolveNoteAuthorFromAuth(auth: AuthContext | null): string | null {
@@ -1058,8 +1184,47 @@ async function applyDocumentUpdate({
       typeof input.comment === "string" ? input.comment.trim() : "";
     entity.comments = normalized.length ? normalized : null;
   }
+  // After `comment`, so the canonical name wins when a payload carries both.
+  if (input.comments !== undefined) {
+    const normalized =
+      typeof input.comments === "string" ? input.comments.trim() : "";
+    entity.comments = normalized.length ? normalized : null;
+  }
+  // Orders only — SalesQuote has no internalNotes column. Reject rather than
+  // ignore it on a quote: the field now satisfies the schema's refine on its
+  // own, so silently dropping it would let an otherwise-empty payload run the
+  // update, and a quote in `sent` status loses its acceptance token and reverts
+  // to draft on any update that reaches execution.
+  if (kind === "quote" && input.internalNotes !== undefined) {
+    throw new CrudHttpError(400, {
+      error: translate(
+        "sales.quotes.internal_notes_unsupported",
+        "Internal notes are not available on quotes.",
+      ),
+    });
+  }
+  if (kind === "order" && input.internalNotes !== undefined) {
+    const normalized =
+      typeof input.internalNotes === "string" ? input.internalNotes.trim() : "";
+    (entity as SalesOrder).internalNotes = normalized.length
+      ? normalized
+      : null;
+  }
   if (typeof input.currencyCode === "string") {
     entity.currencyCode = input.currencyCode;
+  }
+  // Orders only — SalesQuote has no exchange_rate column, so the field is
+  // rejected rather than ignored for the same reason as internalNotes above.
+  if (kind === "quote" && input.exchangeRate !== undefined) {
+    throw new CrudHttpError(400, {
+      error: translate(
+        "sales.quotes.exchange_rate_unsupported",
+        "Exchange rate is not available on quotes.",
+      ),
+    });
+  }
+  if (kind === "order" && input.exchangeRate !== undefined) {
+    (entity as SalesOrder).exchangeRate = toNumericString(input.exchangeRate);
   }
   if (input.channelId !== undefined) {
     if (input.channelId === null) {
@@ -1104,6 +1269,62 @@ async function applyDocumentUpdate({
     }
     (entity as any).statusEntryId = input.statusEntryId ?? null;
     (entity as any).status = statusValue;
+  }
+  // Orders only — SalesQuote has neither the entry-id nor the derived text
+  // column for payment and fulfillment status, so both are rejected on a quote.
+  if (kind === "quote" && input.paymentStatusEntryId !== undefined) {
+    throw new CrudHttpError(400, {
+      error: translate(
+        "sales.quotes.payment_status_unsupported",
+        "Payment status is not available on quotes.",
+      ),
+    });
+  }
+  if (kind === "order" && input.paymentStatusEntryId !== undefined) {
+    const paymentStatusValue = await resolveDictionaryEntryValue(
+      em,
+      input.paymentStatusEntryId,
+      { tenantId },
+    );
+    if (input.paymentStatusEntryId && !paymentStatusValue) {
+      throw new CrudHttpError(400, {
+        error: translate(
+          "sales.documents.detail.statusInvalid",
+          "Selected status could not be found.",
+        ),
+      });
+    }
+    // Both columns, like the statusEntryId branch above and like order create:
+    // moving the id without its derived text leaves a self-contradicting row.
+    (entity as SalesOrder).paymentStatusEntryId =
+      input.paymentStatusEntryId ?? null;
+    (entity as SalesOrder).paymentStatus = paymentStatusValue;
+  }
+  if (kind === "quote" && input.fulfillmentStatusEntryId !== undefined) {
+    throw new CrudHttpError(400, {
+      error: translate(
+        "sales.quotes.fulfillment_status_unsupported",
+        "Fulfillment status is not available on quotes.",
+      ),
+    });
+  }
+  if (kind === "order" && input.fulfillmentStatusEntryId !== undefined) {
+    const fulfillmentStatusValue = await resolveDictionaryEntryValue(
+      em,
+      input.fulfillmentStatusEntryId,
+      { tenantId },
+    );
+    if (input.fulfillmentStatusEntryId && !fulfillmentStatusValue) {
+      throw new CrudHttpError(400, {
+        error: translate(
+          "sales.documents.detail.statusInvalid",
+          "Selected status could not be found.",
+        ),
+      });
+    }
+    (entity as SalesOrder).fulfillmentStatusEntryId =
+      input.fulfillmentStatusEntryId ?? null;
+    (entity as SalesOrder).fulfillmentStatus = fulfillmentStatusValue;
   }
   if (input.placedAt !== undefined) {
     if (input.placedAt === null) {
@@ -1975,8 +2196,8 @@ async function loadCreditMemoSnapshot(
       organizationId: creditMemo.organizationId,
       tenantId: creditMemo.tenantId,
       creditMemoNumber: creditMemo.creditMemoNumber,
-      orderId: creditMemo.orderId ?? null,
-      invoiceId: creditMemo.invoiceId ?? null,
+      orderId: creditMemo.order?.id ?? null,
+      invoiceId: creditMemo.invoice?.id ?? null,
       statusEntryId: creditMemo.statusEntryId ?? null,
       status: creditMemo.status ?? null,
       reason: creditMemo.reason ?? null,
@@ -3528,6 +3749,22 @@ function normalizeTagIds(tags?: Array<string | null | undefined>): string[] {
   return Array.from(set);
 }
 
+// A loaded assignment exposes its tag as an entity, an unwrapped id or the raw
+// column depending on how it was fetched; the snapshot loaders read it the same
+// defensive way. Returns null when the id cannot be determined, which callers
+// must treat as "unrecognised" rather than as a match.
+function readAssignmentTagId(assignment: {
+  tag?: unknown;
+}): string | null {
+  const tag = (assignment as { tag?: unknown }).tag;
+  if (typeof tag === "string") return tag;
+  return (
+    (tag as { id?: string } | null | undefined)?.id ??
+    (assignment as { tag_id?: string }).tag_id ??
+    null
+  );
+}
+
 function buildTagChange(
   beforeTags: TagAssignmentSnapshot[] | undefined,
   afterTags: TagAssignmentSnapshot[] | undefined,
@@ -3572,11 +3809,22 @@ function buildDocumentUpdateChangeKeys(kind: SalesDocumentKind, input: DocumentU
   if (input.customerSnapshot !== undefined) keys.add("customerSnapshot");
   if (input.metadata !== undefined) keys.add("metadata");
   if (input.comment !== undefined) keys.add("comments");
+  if (input.comments !== undefined) keys.add("comments");
   if (input.currencyCode !== undefined) keys.add("currencyCode");
   if (input.channelId !== undefined) keys.add("channelId");
   if (kind === "order") {
+    if (input.internalNotes !== undefined) keys.add("internalNotes");
     if (input.placedAt !== undefined) keys.add("placedAt");
     if (input.expectedDeliveryAt !== undefined) keys.add("expectedDeliveryAt");
+    if (input.exchangeRate !== undefined) keys.add("exchangeRate");
+    if (input.paymentStatusEntryId !== undefined) {
+      keys.add("paymentStatusEntryId");
+      keys.add("paymentStatus");
+    }
+    if (input.fulfillmentStatusEntryId !== undefined) {
+      keys.add("fulfillmentStatusEntryId");
+      keys.add("fulfillmentStatus");
+    }
   }
   if (
     input.shippingAddressId !== undefined ||
@@ -3615,6 +3863,28 @@ function buildDocumentUpdateChangeKeys(kind: SalesDocumentKind, input: DocumentU
   return Array.from(keys);
 }
 
+// Writes only the difference between the stored and the incoming tag set, and
+// no-ops when they are equal. The previous delete-all-then-reinsert rewrote an
+// unchanged set on every save that carried `tags`: on a large
+// sales_document_tag_assignments that delete was the dominant cost of a bulk
+// import, and it also reset each assignment's id/created_at, churned the unique
+// index and left two dead tuples per document per save.
+//
+// Semantics are unchanged — a tag removed out of band still differs from the
+// incoming set and is still restored. Removals go through the UnitOfWork rather
+// than nativeDelete because the assignments are loaded (managed) here; a native
+// delete would leave stale identities behind. The add and remove sets are
+// disjoint by construction, so MikroORM's insert-before-delete commit order can
+// never transiently violate the unique (tag_id, document_id, document_kind).
+//
+// The assignment read below is deliberately scoped by document only, with no
+// organization/tenant predicate — unlike the display reads in
+// api/documents/factory.ts, and unlike the tag-scope check above. It has to
+// match the scope of the unique constraint it reconciles against, which spans
+// (tag_id, document_id, document_kind) and no scope columns. Narrowing the read
+// would hide a mis-scoped row from the diff, put its tag in the add set, and
+// turn the insert into a unique-constraint violation. The document itself is
+// already scope-checked by the caller before this runs.
 async function syncSalesDocumentTags(
   em: EntityManager,
   params: {
@@ -3627,29 +3897,38 @@ async function syncSalesDocumentTags(
 ) {
   if (params.tagIds === undefined) return;
   const tagIds = normalizeTagIds(params.tagIds);
-  if (tagIds.length === 0) {
-    await em.nativeDelete(SalesDocumentTagAssignment, {
-      documentId: params.documentId,
-      documentKind: params.kind,
+  const byId = new Map<string, SalesDocumentTag>();
+  if (tagIds.length > 0) {
+    const tagsInScope = await em.find(SalesDocumentTag, {
+      id: { $in: tagIds },
+      organizationId: params.organizationId,
+      tenantId: params.tenantId,
     });
-    return;
+    if (tagsInScope.length !== tagIds.length) {
+      throw new CrudHttpError(400, {
+        error: "One or more tags not found for this scope",
+      });
+    }
+    tagsInScope.forEach((tag) => byId.set(tag.id, tag));
   }
-  const tagsInScope = await em.find(SalesDocumentTag, {
-    id: { $in: tagIds },
-    organizationId: params.organizationId,
-    tenantId: params.tenantId,
-  });
-  if (tagsInScope.length !== tagIds.length) {
-    throw new CrudHttpError(400, {
-      error: "One or more tags not found for this scope",
-    });
-  }
-  const byId = new Map(tagsInScope.map((tag) => [tag.id, tag]));
-  await em.nativeDelete(SalesDocumentTagAssignment, {
+  const existing = await em.find(SalesDocumentTagAssignment, {
     documentId: params.documentId,
     documentKind: params.kind,
   });
-  for (const tagId of tagIds) {
+  const existingByTagId = new Map<string, (typeof existing)[number]>();
+  existing.forEach((assignment) => {
+    const tagId = readAssignmentTagId(assignment);
+    if (tagId) existingByTagId.set(tagId, assignment);
+  });
+  const wanted = new Set(tagIds);
+  const toRemove = existing.filter((assignment) => {
+    const tagId = readAssignmentTagId(assignment);
+    return tagId === null || !wanted.has(tagId);
+  });
+  const toAdd = tagIds.filter((tagId) => !existingByTagId.has(tagId));
+  if (toRemove.length === 0 && toAdd.length === 0) return;
+  toRemove.forEach((assignment) => em.remove(assignment));
+  for (const tagId of toAdd) {
     const tag = byId.get(tagId);
     if (!tag) continue;
     const assignment = em.create(SalesDocumentTagAssignment, {
@@ -4117,6 +4396,20 @@ async function restoreOrderGraph(
       organizationId: snapshot.order.organizationId,
     },
   );
+  let existingLines: SalesOrderLine[] = [];
+  if (order) {
+    existingLines = await em.find(
+      SalesOrderLine,
+      { order },
+      { orderBy: { lineNumber: "asc" } },
+    );
+    await assertShippedOrderGraphRestorable(
+      em,
+      order,
+      existingLines,
+      snapshot,
+    );
+  }
   if (!order) {
     order = em.create(SalesOrder, {
       id: snapshot.order.id,
@@ -4201,11 +4494,6 @@ async function restoreOrderGraph(
   }
   applyOrderSnapshot(order, snapshot.order);
   await em.flush();
-  const existingLines = await em.find(
-    SalesOrderLine,
-    { order: order.id },
-    { fields: ["id"] },
-  );
   const existingAdjustments = await em.find(
     SalesOrderAdjustment,
     { order: order.id },
@@ -4713,6 +5001,13 @@ const createQuoteCommand: CommandHandler<
             tenantId: quote.tenantId,
             tagIds: parsed.tags,
           });
+          await setDocumentCustomFieldsIfSupplied(em, {
+            entityId: E.sales.sales_quote,
+            recordId: quote.id,
+            organizationId: quote.organizationId,
+            tenantId: quote.tenantId,
+            customFields: parsed.customFields,
+          });
         },
       ],
       { transaction: true },
@@ -4992,10 +5287,6 @@ const updateQuoteCommand: CommandHandler<
     ensureQuoteScope(ctx, quote.organizationId, quote.tenantId);
     await enforceSalesDocumentOptimisticLock(ctx, quote, SALES_RESOURCE_KIND_QUOTE);
     const shouldInvalidateSentToken = (quote.status ?? null) === "sent";
-    if (shouldInvalidateSentToken) {
-      quote.acceptanceToken = null;
-      quote.sentAt = null;
-    }
     const shouldRecalculateTotals =
       parsed.shippingMethodId !== undefined ||
       parsed.shippingMethodSnapshot !== undefined ||
@@ -5018,7 +5309,12 @@ const updateQuoteCommand: CommandHandler<
             input: parsed,
             em,
           });
+          // After applyDocumentUpdate, not before it: the reset must not happen
+          // for an update that turns out to be invalid, or a rejected payload
+          // still strips a sent quote of its acceptance link.
           if (shouldInvalidateSentToken) {
+            quote.acceptanceToken = null;
+            quote.sentAt = null;
             quote.status = "draft";
             quote.statusEntryId = await resolveStatusEntryIdByValue(em, {
               tenantId: quote.tenantId,
@@ -5359,6 +5655,7 @@ const updateOrderCommand: CommandHandler<
       ],
       { transaction: true },
     );
+    emitOrderLifecycleEventsForTransition({ order, previousStatus });
     if (statusChangeNote) {
       const dataEngine = ctx.container.resolve("dataEngine");
       await emitCrudSideEffects({
@@ -5439,14 +5736,22 @@ const updateOrderCommand: CommandHandler<
 
 const createOrderCommand: CommandHandler<
   OrderCreateInput,
-  { orderId: string }
+  { orderId: string; warnings?: OrderPaymentLedgerWarning[] }
 > = {
   id: "sales.orders.create",
   async execute(rawInput, ctx) {
     const generator = ctx.container.resolve(
       "salesDocumentNumberGenerator",
     ) as SalesDocumentNumberGenerator;
+    const deprecatedPaymentLedgerFields = resolveSuppliedOrderPaymentLedgerFields(rawInput)
     const initial = orderCreateSchema.parse(rawInput ?? {});
+    if (deprecatedPaymentLedgerFields.length && !warnedDeprecatedOrderPaymentLedgerInput) {
+      warnedDeprecatedOrderPaymentLedgerInput = true
+      logger.warn("sales.orders.create ignored deprecated payment ledger input", {
+        code: ORDER_PAYMENT_LEDGER_WARNING_CODE,
+        fields: deprecatedPaymentLedgerFields,
+      })
+    }
     const orderNumber =
       typeof initial.orderNumber === "string" &&
       initial.orderNumber.trim().length
@@ -5726,6 +6031,13 @@ const createOrderCommand: CommandHandler<
             tenantId: order.tenantId,
             tagIds: parsed.tags,
           });
+          await setDocumentCustomFieldsIfSupplied(em, {
+            entityId: E.sales.sales_order,
+            recordId: order.id,
+            organizationId: order.organizationId,
+            tenantId: order.tenantId,
+            customFields: parsed.customFields,
+          });
         },
       ],
       { transaction: true },
@@ -5800,7 +6112,24 @@ const createOrderCommand: CommandHandler<
       "created",
     );
 
-    return { orderId: order.id };
+    emitOrderLifecycleEventsForTransition({
+      order,
+      previousStatus: null,
+    });
+
+    return {
+      orderId: order.id,
+      ...(deprecatedPaymentLedgerFields.length
+        ? {
+            warnings: [
+              {
+                code: ORDER_PAYMENT_LEDGER_WARNING_CODE,
+                fields: deprecatedPaymentLedgerFields,
+              },
+            ],
+          }
+        : {}),
+    };
   },
   captureAfter: async (_input, result, ctx) => {
     const em = (ctx.container.resolve("em") as EntityManager).fork();
@@ -6530,11 +6859,50 @@ const quoteAdjustmentDeleteSchema = z.object({
 
 const SHIPPED_QUANTITY_TOLERANCE = 1e-6;
 
+// Locked outright on a shipped line: none of these may move at all.
+const SHIPPED_LINE_NUMERIC_PRICING_FIELDS = [
+  "unitPriceNet",
+  "unitPriceGross",
+  "discountAmount",
+  "discountPercent",
+  "taxRate",
+] as const;
+
+// Line totals are derived, not authored: clients recompute and echo them on every
+// submit, so raising the quantity of a shipped line legitimately changes them. They
+// are still writable straight through, so they cannot simply be ignored either.
+// The invariant that separates a quantity edit from moving money is the per-unit
+// economics — total per unit must stay put, whatever the quantity does. That also
+// keeps discounted lines working, since a proportional total scales with quantity.
+const SHIPPED_LINE_DERIVED_TOTAL_FIELDS = [
+  "totalNetAmount",
+  "totalGrossAmount",
+] as const;
+
+type ShippedLineComparable = Pick<
+  SalesLineSnapshot,
+  | "quantity"
+  | "quantityUnit"
+  | (typeof SHIPPED_LINE_NUMERIC_PRICING_FIELDS)[number]
+  | (typeof SHIPPED_LINE_DERIVED_TOTAL_FIELDS)[number]
+>;
+
 const hasNumericChange = (
   next: number | null | undefined,
   previous: number | null | undefined,
 ): boolean => {
   if (next === undefined || next === null) return false;
+  if (previous === undefined || previous === null) return true;
+  return Math.abs(next - previous) > SHIPPED_QUANTITY_TOLERANCE;
+};
+
+const hasExactNumericChange = (
+  next: number | null | undefined,
+  previous: number | null | undefined,
+): boolean => {
+  if (next === undefined || next === null) {
+    return previous !== undefined && previous !== null;
+  }
   if (previous === undefined || previous === null) return true;
   return Math.abs(next - previous) > SHIPPED_QUANTITY_TOLERANCE;
 };
@@ -6549,6 +6917,111 @@ const hasUnitChange = (
   return next.trim().toLowerCase() !== normalizedPrevious;
 };
 
+const hasExactUnitChange = (
+  next: string | null | undefined,
+  previous: string | null | undefined,
+): boolean =>
+  (next ?? "").trim().toLowerCase() !==
+  (previous ?? "").trim().toLowerCase();
+
+function hasShippedLineTotalChange(
+  next: Partial<ShippedLineComparable>,
+  previous: ShippedLineComparable,
+  nextQuantity: number | null | undefined,
+  exact: boolean,
+): boolean {
+  const numericChange = exact ? hasExactNumericChange : hasNumericChange;
+  const previousQuantity = previous.quantity;
+  const canScale =
+    typeof previousQuantity === "number" &&
+    Math.abs(previousQuantity) > SHIPPED_QUANTITY_TOLERANCE &&
+    typeof nextQuantity === "number";
+
+  return SHIPPED_LINE_DERIVED_TOTAL_FIELDS.some((field) => {
+    const nextTotal = next[field];
+    const previousTotal = previous[field];
+    // Without a scalable quantity pair there is nothing to derive the expected
+    // total from, so fall back to locking the value outright.
+    if (!canScale || typeof previousTotal !== "number") {
+      return numericChange(nextTotal, previousTotal);
+    }
+    if (nextTotal === undefined || nextTotal === null) {
+      return exact ? numericChange(nextTotal, previousTotal) : false;
+    }
+    const expectedTotal =
+      (previousTotal / (previousQuantity as number)) * (nextQuantity as number);
+    // Scale the tolerance with magnitude: a fixed 1e-6 is below the float noise
+    // floor once totals reach six figures.
+    const tolerance = Math.max(
+      SHIPPED_QUANTITY_TOLERANCE,
+      Math.abs(expectedTotal) * 1e-9,
+    );
+    return Math.abs(nextTotal - expectedTotal) > tolerance;
+  });
+}
+
+function hasShippedLinePricingChange(
+  next: Partial<ShippedLineComparable>,
+  previous: ShippedLineComparable,
+  nextQuantity: number | null | undefined,
+  exact: boolean,
+): boolean {
+  const numericChange = exact ? hasExactNumericChange : hasNumericChange;
+  return (
+    SHIPPED_LINE_NUMERIC_PRICING_FIELDS.some((field) =>
+      numericChange(next[field], previous[field]),
+    ) ||
+    hasShippedLineTotalChange(next, previous, nextQuantity, exact) ||
+    (exact
+      ? hasExactUnitChange(next.quantityUnit, previous.quantityUnit)
+      : hasUnitChange(next.quantityUnit, previous.quantityUnit))
+  );
+}
+
+async function assertShippedOrderLineChangeAllowed(
+  existingSnapshot: SalesLineSnapshot,
+  nextSnapshot: Partial<ShippedLineComparable> | null,
+  shippedQuantity: number,
+  exact: boolean,
+): Promise<void> {
+  if (shippedQuantity <= 0) return;
+
+  const nextQuantity = nextSnapshot
+    ? exact
+      ? nextSnapshot.quantity
+      : (nextSnapshot.quantity ?? existingSnapshot.quantity)
+    : 0;
+  const quantityInvalid =
+    nextQuantity === undefined ||
+    nextQuantity < shippedQuantity - SHIPPED_QUANTITY_TOLERANCE;
+  const pricingChanged =
+    nextSnapshot !== null &&
+    hasShippedLinePricingChange(
+      nextSnapshot,
+      existingSnapshot,
+      nextQuantity,
+      exact,
+    );
+  if (!quantityInvalid && !pricingChanged) return;
+
+  const { translate } = await resolveTranslations();
+  if (quantityInvalid) {
+    throw new CrudHttpError(409, {
+      error: translate(
+        "sales.documents.items.errorQuantityBelowShipped",
+        "You cannot lower the quantity below the {{shipped}} already shipped.",
+        { shipped: shippedQuantity },
+      ),
+    });
+  }
+  throw new CrudHttpError(409, {
+    error: translate(
+      "sales.documents.items.errorPriceShipped",
+      "You cannot change the price or unit of a line that has shipped items.",
+    ),
+  });
+}
+
 async function assertShippedOrderLineEditable(
   em: EntityManager,
   order: SalesOrder,
@@ -6562,33 +7035,65 @@ async function assertShippedOrderLineEditable(
     organizationId: order.organizationId,
   });
   const shippedQuantity = shippedByLine.get(lineId) ?? 0;
-  if (shippedQuantity <= 0) return;
+  await assertShippedOrderLineChangeAllowed(
+    existingSnapshot,
+    parsed,
+    shippedQuantity,
+    false,
+  );
+}
 
+async function assertShippedOrderGraphRestorable(
+  em: EntityManager,
+  order: SalesOrder,
+  existingLines: SalesOrderLine[],
+  snapshot: OrderGraphSnapshot,
+): Promise<void> {
+  const shippedByLine = await loadShippedQuantityByLine(em, order.id, {
+    tenantId: order.tenantId,
+    organizationId: order.organizationId,
+  });
+  if (shippedByLine.size === 0) return;
+
+  const snapshotLinesById = new Map(
+    snapshot.lines.flatMap((line) => (line.id ? [[line.id, line] as const] : [])),
+  );
+  for (const line of existingLines) {
+    const shippedQuantity = shippedByLine.get(line.id) ?? 0;
+    if (shippedQuantity <= 0) continue;
+    await assertShippedOrderLineChangeAllowed(
+      mapOrderLineEntityToSnapshot(line),
+      snapshotLinesById.get(line.id) ?? null,
+      shippedQuantity,
+      true,
+    );
+  }
+}
+
+const FULFILLED_ORDER_STATUS = "fulfilled";
+
+const isFulfilledOrder = (order: SalesOrder): boolean => {
+  const normalize = (value: string | null | undefined): string =>
+    (value ?? "").trim().toLowerCase();
+  return (
+    normalize(order.status) === FULFILLED_ORDER_STATUS ||
+    normalize(order.fulfillmentStatus) === FULFILLED_ORDER_STATUS
+  );
+};
+
+async function assertOrderAcceptsNewLine(
+  order: SalesOrder,
+  existingSnapshot: SalesLineSnapshot | null,
+): Promise<void> {
+  if (existingSnapshot) return;
+  if (!isFulfilledOrder(order)) return;
   const { translate } = await resolveTranslations();
-  const nextQuantity = parsed.quantity ?? existingSnapshot.quantity;
-  if (nextQuantity < shippedQuantity - SHIPPED_QUANTITY_TOLERANCE) {
-    throw new CrudHttpError(409, {
-      error: translate(
-        "sales.documents.items.errorQuantityBelowShipped",
-        "You cannot lower the quantity below the {{shipped}} already shipped.",
-        { shipped: shippedQuantity },
-      ),
-    });
-  }
-
-  const pricingChanged =
-    hasNumericChange(parsed.unitPriceNet, existingSnapshot.unitPriceNet) ||
-    hasNumericChange(parsed.unitPriceGross, existingSnapshot.unitPriceGross) ||
-    hasNumericChange(parsed.taxRate, existingSnapshot.taxRate) ||
-    hasUnitChange(parsed.quantityUnit, existingSnapshot.quantityUnit);
-  if (pricingChanged) {
-    throw new CrudHttpError(409, {
-      error: translate(
-        "sales.documents.items.errorPriceShipped",
-        "You cannot change the price or unit of a line that has shipped items.",
-      ),
-    });
-  }
+  throw new CrudHttpError(409, {
+    error: translate(
+      "sales.documents.items.errorAddToFulfilled",
+      "You cannot add a new item to a fulfilled order. Change the order status first.",
+    ),
+  });
 }
 
 const orderLineUpsertCommand: CommandHandler<
@@ -6635,6 +7140,7 @@ const orderLineUpsertCommand: CommandHandler<
     const existingSnapshot = parsed.id
       ? (lineSnapshots.find((line) => line.id === parsed.id) ?? null)
       : null;
+    await assertOrderAcceptsNewLine(order, existingSnapshot);
     await assertShippedOrderLineEditable(em, order, existingSnapshot, parsed);
     const priceMode =
       parsed.priceMode === "gross"
@@ -6970,6 +7476,14 @@ const orderLineDeleteCommand: CommandHandler<
           "sales.documents.detail.error",
           "Document not found or inaccessible.",
         ));
+    }
+    if (filtered.length === 0) {
+      throw new CrudHttpError(409, {
+        error: translate(
+          "sales.documents.items.errorDeleteLast",
+          "An order must contain at least one line item.",
+        ),
+      });
     }
     const sourceInputs = filtered.map((line, index) => ({
       ...mapOrderLineEntityToSnapshot(line),
@@ -9050,8 +9564,8 @@ const createCreditMemoCommand: CommandHandler<
       organizationId: parsed.organizationId,
       tenantId: parsed.tenantId,
       creditMemoNumber: ensuredCreditMemoNumber,
-      orderId: parsed.orderId ?? null,
-      invoiceId: parsed.invoiceId ?? null,
+      order: parsed.orderId ? em.getReference(SalesOrder, parsed.orderId) : null,
+      invoice: parsed.invoiceId ? em.getReference(SalesInvoice, parsed.invoiceId) : null,
       statusEntryId: parsed.statusEntryId ?? null,
       status,
       reason: parsed.reason ?? null,
@@ -9301,8 +9815,12 @@ const updateCreditMemoCommand: CommandHandler<
     ensureOrganizationScope(ctx, creditMemo.organizationId);
     ensureTenantScope(ctx, creditMemo.tenantId);
     creditMemo.creditMemoNumber = before.creditMemo.creditMemoNumber;
-    creditMemo.orderId = before.creditMemo.orderId;
-    creditMemo.invoiceId = before.creditMemo.invoiceId;
+    creditMemo.order = before.creditMemo.orderId
+      ? em.getReference(SalesOrder, before.creditMemo.orderId)
+      : null;
+    creditMemo.invoice = before.creditMemo.invoiceId
+      ? em.getReference(SalesInvoice, before.creditMemo.invoiceId)
+      : null;
     creditMemo.statusEntryId = before.creditMemo.statusEntryId;
     creditMemo.status = before.creditMemo.status;
     creditMemo.reason = before.creditMemo.reason;
@@ -9405,8 +9923,12 @@ const deleteCreditMemoCommand: CommandHandler<
       organizationId: before.creditMemo.organizationId,
       tenantId: before.creditMemo.tenantId,
       creditMemoNumber: before.creditMemo.creditMemoNumber,
-      orderId: before.creditMemo.orderId,
-      invoiceId: before.creditMemo.invoiceId,
+      order: before.creditMemo.orderId
+        ? em.getReference(SalesOrder, before.creditMemo.orderId)
+        : null,
+      invoice: before.creditMemo.invoiceId
+        ? em.getReference(SalesInvoice, before.creditMemo.invoiceId)
+        : null,
       statusEntryId: before.creditMemo.statusEntryId,
       status: before.creditMemo.status,
       reason: before.creditMemo.reason,

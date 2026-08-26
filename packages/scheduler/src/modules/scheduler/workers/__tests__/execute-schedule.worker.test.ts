@@ -2,7 +2,25 @@ import { CrudHttpError } from '@open-mercato/shared/lib/crud/errors'
 import { ensureTenantScope } from '@open-mercato/shared/lib/commands/scope'
 import { createQueue } from '@open-mercato/queue'
 import { ScheduledJob } from '../../data/entities'
+import { registerSchedulerSafeCommands } from '../../lib/scheduler-safe-commands'
+import { registerModules } from '@open-mercato/shared/lib/modules/registry'
 import executeScheduleWorker from '../execute-schedule.worker'
+
+// Queue-target dispatch verifies module provenance against the live registry
+// (#5213 B1): register the module that owns the fixture queue.
+registerModules([
+  {
+    id: 'worker_test_module',
+    workers: [
+      {
+        id: 'worker_test_module:workers:example',
+        queue: 'example',
+        concurrency: 1,
+        handler: async () => {},
+      },
+    ],
+  },
+] as never)
 
 const mockCommandExecute = jest.fn()
 
@@ -41,6 +59,7 @@ function buildCommandSchedule(overrides: Partial<ScheduledJob> = {}): ScheduledJ
   schedule.scheduleValue = '* * * * *'
   schedule.timezone = 'UTC'
   schedule.sourceType = 'user'
+  schedule.createdByUserId = 'user-a'
   schedule.createdAt = new Date('2026-01-01T00:00:00.000Z')
   schedule.updatedAt = new Date('2026-01-01T00:00:00.000Z')
   Object.assign(schedule, overrides)
@@ -54,6 +73,7 @@ function buildWorkerContext(schedule: ScheduledJob) {
   }
   const rbacService = {
     tenantHasFeature: jest.fn(async () => true),
+    userHasAllFeatures: jest.fn(async () => true),
   }
   return {
     context: {
@@ -71,6 +91,15 @@ function buildWorkerContext(schedule: ScheduledJob) {
 }
 
 describe('executeScheduleWorker command scope', () => {
+  beforeAll(() => {
+    registerSchedulerSafeCommands([
+      {
+        commandId: 'scheduler.test.assert-tenant-scope',
+        requiredFeatures: ['scheduler.jobs.manage'],
+      },
+    ])
+  })
+
   afterEach(() => {
     mockCommandExecute.mockReset()
   })
@@ -115,7 +144,11 @@ describe('executeScheduleWorker queue target payload contract', () => {
       targetType: 'queue',
       targetQueue: 'example',
       targetCommand: null,
-      targetPayload: { connectionId: 'connection-id', scope: 'organization' },
+      sourceType: 'module',
+      // module registration never stamps an acting user (#5213 B1)
+      createdByUserId: null,
+      sourceModule: 'worker_test_module',
+      targetPayload: { connectionId: 'connection-id' },
       ...overrides,
     })
   }
@@ -145,7 +178,7 @@ describe('executeScheduleWorker queue target payload contract', () => {
     ;(createQueue as jest.Mock).mockReturnValue({ enqueue, close })
   })
 
-  it('delivers the flat targetPayload contract with scheduler-owned fields applied last', async () => {
+  it('delivers the flat targetPayload contract with scheduler-owned fields applied last (#5213)', async () => {
     const schedule = buildQueueSchedule({
       targetPayload: {
         connectionId: 'connection-id',
@@ -159,11 +192,12 @@ describe('executeScheduleWorker queue target payload contract', () => {
 
     expect(enqueue).toHaveBeenCalledWith({
       connectionId: 'connection-id',
-      scope: 'organization',
+      scope: { tenantId: 'tenant-a', organizationId: 'org-a' },
       payload: { nested: true },
       tenantId: 'tenant-a',
       organizationId: 'org-a',
       _idempotencyKey: `scheduler-${scheduleId}-worker-job-1`,
+      _jobOrigin: 'scheduler',
     })
     expect(close).toHaveBeenCalledTimes(1)
   })

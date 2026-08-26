@@ -27,9 +27,12 @@ describe('My timesheets page DS contract', () => {
   it('marks a dirty cell with warning tokens that carry dedicated dark-mode values', () => {
     const source = readPageSource()
 
-    expect(source).toContain(
-      'border-status-warning-border bg-status-warning-bg text-status-warning-text',
-    )
+    // The cell is an InlineInput: the warning surface lands on the wrapper via
+    // `className`, the legible foreground on the field itself via `inputClassName`.
+    // Both halves are required — the warning background with an unpinned text
+    // colour is exactly the 1.01:1 dark-mode regression this guard exists for.
+    expect(source).toContain('border-status-warning-border bg-status-warning-bg')
+    expect(source).toMatch(/isDirty\s*\n?\s*\?\s*'text-status-warning-text'/)
     expect(source).not.toContain('border-amber-400')
   })
 

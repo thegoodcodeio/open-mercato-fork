@@ -5,6 +5,7 @@ import { Page, PageBody } from '@open-mercato/ui/backend/Page'
 import { Button } from '@open-mercato/ui/primitives/button'
 import { IconButton } from '@open-mercato/ui/primitives/icon-button'
 import type { ReadApiResultOrThrowOptions } from '@open-mercato/ui/backend/utils/apiCall'
+import { InlineInput } from '@open-mercato/ui/primitives/inline-input'
 import { apiCall, apiCallOrThrow, readApiResultOrThrow } from '@open-mercato/ui/backend/utils/apiCall'
 import { useGuardedMutation } from '@open-mercato/ui/backend/injection/useGuardedMutation'
 import { flash } from '@open-mercato/ui/backend/FlashMessages'
@@ -21,6 +22,11 @@ import { TimerBar } from '../../../lib/timesheets-ui/TimerBar'
 import { AddRowDropdown } from '../../../lib/timesheets-ui/AddRowDropdown'
 import { CreateProjectDialog } from '../../../lib/timesheets-ui/CreateProjectDialog'
 import { ProjectColorDot } from '../../../lib/timesheets-ui/ProjectColorDot'
+import {
+  formatMinutesAsDecimal,
+  parseDurationInput,
+  type DurationParseError,
+} from '../../../lib/timesheetsDuration'
 import { createLogger } from '@open-mercato/shared/lib/logger'
 
 const logger = createLogger('staff')
@@ -32,6 +38,7 @@ type CellEntry = { id?: string; minutes: number }
 type EntryMap = Record<string, Record<string, CellEntry[]>>
 type DirtyMap = Record<string, Record<string, CellEntry>>
 type RawTextMap = Record<string, Record<string, string>>
+type CellErrorMap = Record<string, Record<string, DurationParseError>>
 type ViewMode = 'weekly' | 'monthly'
 type ViewType = 'timesheet' | 'list'
 
@@ -122,22 +129,12 @@ function isWeekendDay(date: Date): boolean {
   return d === 0 || d === 6
 }
 
-function minutesToDecimal(minutes: number): string {
-  if (minutes === 0) return ''
-  const hours = minutes / 60
-  return hours % 1 === 0 ? String(hours) : hours.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')
-}
-
-function decimalToMinutes(value: string): number {
-  const trimmed = value.trim()
-  if (!trimmed) return 0
-  const num = parseFloat(trimmed.replace(',', '.'))
-  if (isNaN(num) || num < 0) return 0
-  return Math.min(Math.round(num * 60), 1440)
-}
-
 function getLocalizedDayName(date: Date): string {
   return date.toLocaleDateString(undefined, { weekday: 'short' })
+}
+
+function getLocalizedCellDate(date: Date): string {
+  return date.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })
 }
 
 // --- Derived date ranges ---
@@ -211,6 +208,7 @@ export default function MyTimesheetsPage() {
   const [rawEntries, setRawEntries] = React.useState<RawTimeEntry[]>([])
   const [dirty, setDirty] = React.useState<DirtyMap>({})
   const [rawText, setRawText] = React.useState<RawTextMap>({})
+  const [cellErrors, setCellErrors] = React.useState<CellErrorMap>({})
   const [staffMemberId, setStaffMemberId] = React.useState<string | null>(null)
   const [staffMemberMissing, setStaffMemberMissing] = React.useState(false)
   const [isInitialLoad, setIsInitialLoad] = React.useState(true)
@@ -236,6 +234,27 @@ export default function MyTimesheetsPage() {
     contextId: mutationContextId,
     blockedMessage: t('ui.forms.flash.saveBlocked', 'Save blocked by validation'),
   })
+
+  const gridInstanceId = React.useId()
+  const durationHintId = `${gridInstanceId}-duration-hint`
+  const buildDurationErrorId = React.useCallback(
+    (projectId: string, dateKey: string): string => `${gridInstanceId}-duration-error-${projectId}-${dateKey}`,
+    [gridInstanceId],
+  )
+  const durationFormatHint = t(
+    'staff.timesheets.my.duration.hint',
+    'Enter hours (8 or 1.5), h:mm (1:30) or minutes (90m). Max 24h per day.',
+  )
+  const describeDurationCell = React.useCallback((projectName: string, date: Date): string => (
+    t('staff.timesheets.my.duration.cellLabel', 'Duration for {project} on {date}')
+      .replace('{project}', projectName)
+      .replace('{date}', getLocalizedCellDate(date))
+  ), [t])
+  const describeDurationError = React.useCallback((reason: DurationParseError): string => (
+    reason === 'out_of_range'
+      ? t('staff.timesheets.my.duration.errors.out_of_range', 'Maximum 24h per day. Use 1:30 or 90m for shorter entries.')
+      : t('staff.timesheets.my.duration.errors.invalid', 'Unrecognised duration. Use 8, 1.5, 1:30, 90m or 1h 30m.')
+  ), [t])
 
   // --- Feature check ---
   React.useEffect(() => {
@@ -433,6 +452,7 @@ export default function MyTimesheetsPage() {
         setEntries(map)
         setDirty({})
         setRawText({})
+        setCellErrors({})
       } else {
         partialLoadFailures.push('entries')
       }
@@ -442,6 +462,7 @@ export default function MyTimesheetsPage() {
           t('staff.timesheets.my.errors.partialLoad', 'Some timesheet data could not be loaded. Try again.'),
         )
       }
+
     } catch (error) {
       logger.error('staff.timesheets.my.load', { err: error })
       const message = t('staff.timesheets.my.errors.load', 'Failed to load timesheets.')
@@ -462,13 +483,38 @@ export default function MyTimesheetsPage() {
   }, [loadData, scopeVersion])
 
   // --- Cell handlers ---
+  const clearCellError = React.useCallback((projectId: string, dateKey: string) => {
+    setCellErrors((prev) => {
+      const projectErrors = prev[projectId]
+      if (!projectErrors || projectErrors[dateKey] === undefined) return prev
+      const nextProjectErrors = { ...projectErrors }
+      delete nextProjectErrors[dateKey]
+      const next = { ...prev }
+      if (Object.keys(nextProjectErrors).length > 0) next[projectId] = nextProjectErrors
+      else delete next[projectId]
+      return next
+    })
+  }, [])
+
   const handleCellChange = React.useCallback((projectId: string, dateKey: string, value: string) => {
-    // Only allow digits, dots, and commas (decimal separators)
-    const sanitized = value.replace(/[^0-9.,]/g, '')
+    clearCellError(projectId, dateKey)
     setRawText((prev) => {
       const projectTexts = { ...(prev[projectId] ?? {}) }
-      projectTexts[dateKey] = sanitized
+      projectTexts[dateKey] = value
       return { ...prev, [projectId]: projectTexts }
+    })
+  }, [clearCellError])
+
+  const dropDirtyCell = React.useCallback((projectId: string, dateKey: string) => {
+    setDirty((prev) => {
+      const projectEntries = prev[projectId]
+      if (!projectEntries || projectEntries[dateKey] === undefined) return prev
+      const nextProjectEntries = { ...projectEntries }
+      delete nextProjectEntries[dateKey]
+      const next = { ...prev }
+      if (Object.keys(nextProjectEntries).length > 0) next[projectId] = nextProjectEntries
+      else delete next[projectId]
+      return next
     })
   }, [])
 
@@ -476,7 +522,18 @@ export default function MyTimesheetsPage() {
     const editedText = rawText[projectId]?.[dateKey]
     const text = editedText ?? currentValue
     if (text === undefined) return
-    const minutes = decimalToMinutes(text)
+    const parsed = parseDurationInput(text)
+    if (!parsed.ok) {
+      dropDirtyCell(projectId, dateKey)
+      setCellErrors((prev) => {
+        const projectErrors = { ...(prev[projectId] ?? {}) }
+        projectErrors[dateKey] = parsed.reason
+        return { ...prev, [projectId]: projectErrors }
+      })
+      return
+    }
+    clearCellError(projectId, dateKey)
+    const minutes = parsed.minutes
     const cellEntries = entries[projectId]?.[dateKey] ?? []
     const existingMinutes = cellEntries.reduce((sum, e) => sum + e.minutes, 0)
 
@@ -499,7 +556,7 @@ export default function MyTimesheetsPage() {
       }
       return { ...prev, [projectId]: projectTexts }
     })
-  }, [rawText, entries])
+  }, [rawText, entries, clearCellError, dropDirtyCell])
 
   const getCellValue = React.useCallback((projectId: string, dateKey: string): number => {
     const dirtyCell = dirty[projectId]?.[dateKey] as CellEntry | undefined
@@ -510,9 +567,12 @@ export default function MyTimesheetsPage() {
 
   // --- Save ---
   const hasChanges = Object.keys(dirty).length > 0 || Object.keys(rawText).length > 0
-
+  const invalidCellCount = React.useMemo(
+    () => Object.values(cellErrors).reduce((sum, projectErrors) => sum + Object.keys(projectErrors).length, 0),
+    [cellErrors],
+  )
   const handleSave = React.useCallback(async () => {
-    if (!hasChanges) return
+    if (!hasChanges || invalidCellCount > 0) return
     setIsSaving(true)
     try {
       const bulkEntries: Array<{ id?: string; date: string; timeProjectId: string; durationMinutes: number }> = []
@@ -552,7 +612,7 @@ export default function MyTimesheetsPage() {
     } finally {
       setIsSaving(false)
     }
-  }, [dirty, entries, hasChanges, t, loadData, runMutation, mutationContextId, staffMemberId, retryLastMutation])
+  }, [dirty, entries, hasChanges, invalidCellCount, t, loadData, runMutation, mutationContextId, staffMemberId, retryLastMutation])
 
   // --- Totals ---
   const getRowTotal = React.useCallback((projectId: string): number => {
@@ -711,6 +771,12 @@ export default function MyTimesheetsPage() {
         return next
       })
       setRawText((prev) => {
+        if (!prev[project.id]) return prev
+        const next = { ...prev }
+        delete next[project.id]
+        return next
+      })
+      setCellErrors((prev) => {
         if (!prev[project.id]) return prev
         const next = { ...prev }
         delete next[project.id]
@@ -906,7 +972,7 @@ export default function MyTimesheetsPage() {
                 ? t('staff.timesheets.my.weekTotal', 'Week Total')
                 : t('staff.timesheets.my.total_hours', 'Total Hours')}
             </p>
-            <p className="text-2xl font-semibold">{minutesToDecimal(grandTotal) || '0'}</p>
+            <p className="text-2xl font-semibold">{formatMinutesAsDecimal(grandTotal) || '0'}</p>
           </div>
           <div className="rounded-lg border bg-card p-4">
             <p className="text-sm text-muted-foreground">{t('staff.timesheets.my.working_days', 'Working Days')}</p>
@@ -914,7 +980,7 @@ export default function MyTimesheetsPage() {
           </div>
           <div className="rounded-lg border bg-card p-4">
             <p className="text-sm text-muted-foreground">{t('staff.timesheets.my.daily_average', 'Daily Average')}</p>
-            <p className="text-2xl font-semibold">{minutesToDecimal(Math.round(dailyAverage)) || '0'}</p>
+            <p className="text-2xl font-semibold">{formatMinutesAsDecimal(Math.round(dailyAverage)) || '0'}</p>
           </div>
           <div className="rounded-lg border bg-card p-4">
             <p className="text-sm text-muted-foreground">{t('staff.timesheets.my.status', 'Status')}</p>
@@ -949,12 +1015,16 @@ export default function MyTimesheetsPage() {
               onViewTypeChange={setViewType}
             />
             <div className="flex items-center gap-2">
-              {hasChanges && (
+              {invalidCellCount > 0 ? (
+                <span className="text-xs text-status-error-text font-medium">
+                  {t('staff.timesheets.my.duration.blocked', 'Fix the highlighted durations to save')}
+                </span>
+              ) : hasChanges && (
                 <span className="text-xs text-status-warning-text font-medium">
                   {t('staff.timesheets.my.unsaved', 'Unsaved changes')}
                 </span>
               )}
-              <Button size="sm" type="button" onClick={handleSave} disabled={!hasChanges || isSaving}>
+              <Button size="sm" type="button" onClick={handleSave} disabled={!hasChanges || isSaving || invalidCellCount > 0}>
                 {isSaving ? t('staff.timesheets.my.saving', 'Saving...') : t('staff.timesheets.my.save_changes', 'Save Changes')}
               </Button>
             </div>
@@ -1080,32 +1150,50 @@ export default function MyTimesheetsPage() {
                       const weekend = isWeekendDay(date)
                       const cellMinutes = getCellValue(project.id, dateKey)
                       const isDirty = dirty[project.id]?.[dateKey] !== undefined
+                      const cellError = cellErrors[project.id]?.[dateKey]
+                      const cellErrorMessage = cellError ? describeDurationError(cellError) : undefined
+                      const cellErrorId = cellErrorMessage ? buildDurationErrorId(project.id, dateKey) : undefined
                       return (
                         <td key={dateKey} className={`px-0.5 py-0.5 ${weekend ? 'bg-muted/40' : ''}`}>
                           {weekend ? (
                             <div className="rounded px-1 py-1 text-center text-xs text-muted-foreground/50">-</div>
                           ) : (
-                            <input
+                            <InlineInput
                               type="text"
-                              inputMode="decimal"
-                              className={`mx-auto block rounded border text-center tabular-nums transition-colors
-                                ${viewMode === 'weekly' ? 'w-12 px-1 py-0.5 text-xs' : 'w-8 px-0 py-1 text-[10px]'}
-                                ${isDirty
-                                  ? 'border-status-warning-border bg-status-warning-bg text-status-warning-text'
-                                  : `border-muted-foreground/20 bg-transparent ${cellMinutes > 0 ? 'text-foreground' : 'text-muted-foreground'}`}
-                                ${cellMinutes > 0 ? 'font-semibold' : ''}
-                                hover:border-muted-foreground/40 focus:border-primary focus:bg-background focus:outline-none`}
-                              value={rawText[project.id]?.[dateKey] ?? minutesToDecimal(cellMinutes)}
+                              inputMode="text"
+                              showBorderOnHover={false}
+                              className={`mx-auto flex h-6 border transition-colors
+                                ${viewMode === 'weekly' ? 'w-12 px-1' : 'w-8 px-0'}
+                                ${cellError
+                                  ? 'bg-status-error-bg'
+                                  : isDirty
+                                    ? 'border-status-warning-border bg-status-warning-bg'
+                                    : 'border-muted-foreground/20 bg-transparent hover:border-muted-foreground/40'}`}
+                              inputClassName={`text-center text-xs tabular-nums
+                                ${cellError
+                                  ? 'text-status-error-text'
+                                  : isDirty
+                                    ? 'text-status-warning-text'
+                                    : cellMinutes > 0 ? 'text-foreground' : 'text-muted-foreground'}
+                                ${cellMinutes > 0 ? 'font-semibold' : ''}`}
+                              value={rawText[project.id]?.[dateKey] ?? formatMinutesAsDecimal(cellMinutes)}
                               onChange={(e) => handleCellChange(project.id, dateKey, e.target.value)}
                               onBlur={(event) => handleCellBlur(project.id, dateKey, event.currentTarget.value)}
                               placeholder={t('staff.timesheets.my.durationPlaceholder', '0')}
+                              aria-invalid={cellError !== undefined}
+                              aria-label={describeDurationCell(project.name, date)}
+                              aria-describedby={[durationHintId, cellErrorId].filter(Boolean).join(' ')}
+                              title={cellErrorMessage ?? durationFormatHint}
                             />
                           )}
+                          {cellErrorMessage ? (
+                            <span id={cellErrorId} role="alert" className="sr-only">{cellErrorMessage}</span>
+                          ) : null}
                         </td>
                       )
                     })}
                     <td className="px-3 py-1.5 text-right font-semibold text-xs tabular-nums">
-                      {minutesToDecimal(getRowTotal(project.id)) || '0'}
+                      {formatMinutesAsDecimal(getRowTotal(project.id)) || '0'}
                     </td>
                   </tr>
                 ))}
@@ -1131,14 +1219,15 @@ export default function MyTimesheetsPage() {
                     const dayMinutes = getDayTotal(date)
                     return (
                       <td key={formatDateKey(date)} className={`py-2 text-center text-xs tabular-nums ${weekend ? 'text-muted-foreground/50' : ''}`}>
-                        {weekend ? '-' : (minutesToDecimal(dayMinutes) || '-')}
+                        {weekend ? '-' : (formatMinutesAsDecimal(dayMinutes) || '-')}
                       </td>
                     )
                   })}
-                  <td className="px-3 py-2 text-right tabular-nums font-semibold">{minutesToDecimal(grandTotal) || '0'}</td>
+                  <td className="px-3 py-2 text-right tabular-nums font-semibold">{formatMinutesAsDecimal(grandTotal) || '0'}</td>
                 </tr>
               </tfoot>
             </table>
+            <p id={durationHintId} className="px-3 py-2 text-xs text-muted-foreground">{durationFormatHint}</p>
           </div>
         )}
         </div>

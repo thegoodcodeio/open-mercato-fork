@@ -1,3 +1,4 @@
+import { normalizeFilters } from '@open-mercato/shared/lib/query/join-utils'
 import { buildTimeEntryListFilters } from '../timeEntryListFilters'
 
 /**
@@ -75,5 +76,23 @@ describe('buildTimeEntryListFilters — running filter (issue #3717)', () => {
   it('parses id lists and ignores blank entries', () => {
     const filters = buildTimeEntryListFilters({ ids: 'a, ,b' })
     expect(filters.id).toEqual({ $in: ['a', 'b'] })
+  })
+})
+
+describe('buildTimeEntryListFilters — query-engine normalization (issue #4841)', () => {
+  it('normalizes the running lookup to null-comparison clauses the engine must honor', () => {
+    const clauses = normalizeFilters(buildTimeEntryListFilters({ running: 'true' }))
+
+    // Both clauses must survive normalization — a dropped clause would silently
+    // widen the running lookup. They normalize as `exists`, not as null equality:
+    // the engine renders `ne`/`eq` against null as SQL `!= NULL` / `= NULL`, which
+    // are UNKNOWN under three-valued logic and match zero rows (see #3717).
+    expect(clauses).toEqual(
+      expect.arrayContaining([
+        { field: 'started_at', op: 'exists', value: true },
+        { field: 'ended_at', op: 'exists', value: false },
+      ]),
+    )
+    expect(clauses.some((clause) => clause.value === null)).toBe(false)
   })
 })

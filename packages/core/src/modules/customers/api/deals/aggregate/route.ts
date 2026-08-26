@@ -6,6 +6,7 @@ import { getAuthFromRequest } from '@open-mercato/shared/lib/auth/server'
 import { createRequestContainer } from '@open-mercato/shared/lib/di/container'
 import { resolveOrganizationScopeForRequest } from '@open-mercato/core/modules/directory/utils/organizationScope'
 import { resolveDealsOrganizationIds } from '../../../lib/dealsOrganizationScope'
+import { resolveOptionalBaseCurrencyCode } from '../../../lib/optionalBaseCurrency'
 import type { ExchangeRateService } from '@open-mercato/core/modules/currencies/services/exchangeRateService'
 import { parseBooleanFromUnknown } from '@open-mercato/shared/lib/boolean'
 import { escapeLikePattern } from '@open-mercato/shared/lib/db/escapeLikePattern'
@@ -13,6 +14,7 @@ import type { CrudCtx } from '@open-mercato/shared/lib/crud/factory'
 import { isTenantDataEncryptionEnabled } from '@open-mercato/shared/lib/encryption/toggles'
 import type { OpenApiRouteDoc } from '@open-mercato/shared/lib/openapi'
 import { fetchStuckDealIds } from '../../../lib/stuckDeals'
+import { expandDealStatusAliases } from '../../../lib/dealStatus'
 import { findMatchingEntityIdsBySearchTokensAcrossSources } from '../../utils'
 import { E } from '#generated/entities.ids.generated'
 import { createLogger } from '@open-mercato/shared/lib/logger'
@@ -26,7 +28,7 @@ export const metadata = {
 const querySchema = z.object({
   pipelineId: z.string().uuid().optional(),
   search: z.string().optional(),
-  status: z.array(z.enum(['open', 'closed', 'win', 'loose'])).optional(),
+  status: z.array(z.string().max(50)).max(20).optional(),
   ownerUserId: z.array(z.string().uuid()).optional(),
   personId: z.array(z.string().uuid()).optional(),
   companyId: z.array(z.string().uuid()).optional(),
@@ -181,11 +183,11 @@ export async function GET(req: Request) {
   // avoids the per-row decryption cost that would be paid by `findWithDecryption` for an
   // aggregate that never reads `title`/`description`. The search path still relies on
   // the token index above to find matching deals when encrypted columns are involved.
-  const baseCurrency = await em.getConnection().execute<Array<{ code: string }>>(
-    `SELECT code FROM currencies WHERE tenant_id = ? AND organization_id = ? AND is_base = true AND deleted_at IS NULL LIMIT 1`,
-    [effectiveTenantId, orgFilterIds[0]],
+  const baseCurrencyCode = await resolveOptionalBaseCurrencyCode(
+    container,
+    effectiveTenantId,
+    orgFilterIds[0],
   )
-  const baseCurrencyCode = baseCurrency[0]?.code ?? null
 
   // Build WHERE clause shared between count + sum queries
   const orgPlaceholders = orgFilterIds.map(() => '?').join(',')
@@ -246,9 +248,11 @@ export async function GET(req: Request) {
     }
   }
   if (parsed.data.status && parsed.data.status.length) {
-    const placeholders = parsed.data.status.map(() => '?').join(',')
+    // Non-empty input always expands to a non-empty set, so this always narrows.
+    const expandedStatuses = expandDealStatusAliases(parsed.data.status)
+    const placeholders = expandedStatuses.map(() => '?').join(',')
     where.push(`status IN (${placeholders})`)
-    values.push(...parsed.data.status)
+    values.push(...expandedStatuses)
   }
   if (parsed.data.ownerUserId && parsed.data.ownerUserId.length) {
     const placeholders = parsed.data.ownerUserId.map(() => '?').join(',')
@@ -264,7 +268,14 @@ export async function GET(req: Request) {
     values.push(parsed.data.expectedCloseAtTo)
   }
   if (parsed.data.isOverdue) {
-    where.push("expected_close_at < CURRENT_DATE AND status = 'open'")
+    // Mirror the list route's precedence: the caller-supplied status filter wins, and
+    // status='open' is injected only when none was provided.
+    const hasCallerStatus = !!parsed.data.status?.length
+    if (hasCallerStatus) {
+      where.push('expected_close_at < CURRENT_DATE')
+    } else {
+      where.push("expected_close_at < CURRENT_DATE AND status = 'open'")
+    }
   }
   if (parsed.data.isStuck) {
     // Reuse the list endpoint's stuck-deal lookup so kanban headers, lane counts, and the

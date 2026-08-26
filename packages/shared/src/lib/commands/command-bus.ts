@@ -31,6 +31,7 @@ import {
 } from './command-interceptor-runner'
 import type { CommandInterceptorContext } from './command-interceptor'
 import { CommandInterceptorError } from './errors'
+import { isReadProjectionAlwaysConsistent } from '@open-mercato/shared/lib/data/consistency'
 import { createLogger } from '../logger'
 
 const logger = createLogger('shared').child({ component: 'commands' })
@@ -46,6 +47,28 @@ const SKIPPED_ACTION_LOG_RESOURCE_KINDS = new Set<string>([
 function asRecord(input: unknown): Record<string, unknown> | null {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null
   return input as Record<string, unknown>
+}
+
+/** Command handlers often return domain keys (e.g. warehouseId) without `id`; cache invalidation must still resolve the record. */
+function extractPrimaryIdFromCommandResult(result: unknown): string | null {
+  const r = asRecord(result)
+  if (!r) return null
+  const direct = pickFirstIdentifier(r.id, r.entityId, r.recordId)
+  if (direct) return direct
+  for (const key of [
+    'warehouseId',
+    'zoneId',
+    'locationId',
+    'lotId',
+    'reservationId',
+    'profileId',
+    'movementId',
+    'balanceId',
+  ]) {
+    const v = r[key]
+    if (typeof v === 'string' && v.trim().length > 0) return v.trim()
+  }
+  return null
 }
 
 function toISOString(value: unknown): string | null {
@@ -222,7 +245,8 @@ export class CommandBus {
         allInterceptors, commandId, options.input, interceptorCtx, userFeatures,
       )
       if (!beforeResult.ok) {
-        throw new CommandInterceptorError(beforeResult.error!.message)
+        const blocked = beforeResult.error!
+        throw new CommandInterceptorError(blocked.message, { status: blocked.status, body: blocked.body })
       }
       interceptorMetadata = beforeResult.metadataByInterceptor
       if (beforeResult.modifiedInput) {
@@ -243,6 +267,30 @@ export class CommandBus {
     const snapshotsWithAfter = { ...snapshots, after: afterSnapshot }
     const logMeta = await this.buildLog(handler, effectiveOptions, result, snapshotsWithAfter)
     let mergedMeta = this.mergeMetadata(effectiveOptions.metadata, logMeta)
+    // Interceptors opt into audit-log enrichment with a reserved `logContext` key rather
+    // than the generic `context` one, so the metadata an interceptor already passes to its
+    // own afterExecute hook is never silently promoted into audit storage.
+    // Map iteration order is interceptor priority order (see collectMatching), so a
+    // later-priority interceptor overrides an earlier one on key collisions.
+    let interceptorContextMerged: Record<string, unknown> = {}
+    for (const meta of interceptorMetadata.values()) {
+      const logContextRecord = asRecord(asRecord(meta)?.logContext)
+      if (!logContextRecord) continue
+      interceptorContextMerged = {
+        ...interceptorContextMerged,
+        ...logContextRecord,
+      }
+    }
+    const baseContext = asRecord(effectiveOptions.metadata?.context) ?? {}
+    const logMetaContext = asRecord(logMeta?.context) ?? {}
+    if (Object.keys(interceptorContextMerged).length > 0 || Object.keys(baseContext).length > 0 || Object.keys(logMetaContext).length > 0) {
+      mergedMeta = mergedMeta ?? {}
+      mergedMeta.context = {
+        ...baseContext,
+        ...interceptorContextMerged,
+        ...logMetaContext,
+      }
+    }
     const undoable = this.isUndoable(handler)
     if (undoable) {
       mergedMeta = mergedMeta ?? {}
@@ -340,7 +388,8 @@ export class CommandBus {
           allInterceptors, log.commandId, undoCtx, interceptorCtx, userFeatures,
         )
         if (!beforeResult.ok) {
-          throw new CommandInterceptorError(beforeResult.error!.message)
+          const blocked = beforeResult.error!
+          throw new CommandInterceptorError(blocked.message, { status: blocked.status, body: blocked.body })
         }
         undoInterceptorMetadata = beforeResult.metadataByInterceptor
       }
@@ -534,6 +583,9 @@ export class CommandBus {
     const organizationId =
       metadata.organizationId ?? options.ctx.selectedOrganizationId ?? options.ctx.auth?.orgId ?? null
     const actorUserId = metadata.actorUserId ?? options.ctx.auth?.sub ?? null
+    const systemActorContext = !actorUserId && options.ctx.systemActor === true
+      ? { systemActor: 'system:command' }
+      : null
     const payload: Record<string, unknown> = {
       tenantId: tenantId ?? undefined,
       organizationId: organizationId ?? undefined,
@@ -554,7 +606,11 @@ export class CommandBus {
       if ('snapshotBefore' in metadata && metadata.snapshotBefore !== undefined) payload.snapshotBefore = metadata.snapshotBefore
       if ('snapshotAfter' in metadata && metadata.snapshotAfter !== undefined) payload.snapshotAfter = metadata.snapshotAfter
       if ('changes' in metadata && metadata.changes !== undefined && metadata.changes !== null) payload.changes = metadata.changes
-      if ('context' in metadata && metadata.context !== undefined && metadata.context !== null) payload.context = metadata.context
+      if ('context' in metadata && metadata.context !== undefined && metadata.context !== null) {
+        payload.context = { ...(systemActorContext ?? {}), ...metadata.context }
+      } else if (systemActorContext) {
+        payload.context = systemActorContext
+      }
     }
 
     const redoEnvelope = wrapRedoPayload('commandPayload' in payload ? (payload.commandPayload as unknown) : undefined, options.input)
@@ -584,6 +640,7 @@ export class CommandBus {
 
       const recordId = pickFirstIdentifier(
         metadata?.resourceId,
+        extractPrimaryIdFromCommandResult(result),
         resultRecord?.entityId,
         resultRecord?.id,
         resultRecord?.recordId,
@@ -674,7 +731,10 @@ export class CommandBus {
     try {
       const dataEngine = (container.resolve('dataEngine') as DataEngine)
       await dataEngine.flushOrmEntityChanges(suppress)
-    } catch {
+    } catch (error) {
+      if (isReadProjectionAlwaysConsistent()) {
+        throw error
+      }
       // best-effort: failures should not block command execution
     }
   }

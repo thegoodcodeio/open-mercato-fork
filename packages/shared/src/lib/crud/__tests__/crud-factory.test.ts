@@ -10,6 +10,18 @@ import {
   registerOptimisticLockReaders,
 } from '@open-mercato/shared/lib/crud/optimistic-lock-store'
 import { loadCustomFieldDefinitionIndex } from '@open-mercato/shared/lib/crud/custom-fields'
+import { registerMutationGuards } from '@open-mercato/shared/lib/crud/mutation-guard-store'
+import { CommandInterceptorError } from '@open-mercato/shared/lib/commands/errors'
+import {
+  registerLoggerExtension,
+  resetLoggerExtension,
+  type LoggerExtensionRecord,
+} from '@open-mercato/shared/lib/logger'
+import {
+  registerTelemetryRuntime,
+  resetTelemetryRuntime,
+  type TelemetryRuntime,
+} from '@open-mercato/shared/lib/telemetry/runtime'
 import { z } from 'zod'
 
 // Keep the real custom-field helpers but spy on the definition loader so we can
@@ -201,6 +213,7 @@ describe('CRUD Factory', () => {
     }
     crudMutationGuardService = null
     registerApiInterceptors([])
+    registerMutationGuards([])
   })
 
   const querySchema = z.object({
@@ -263,6 +276,28 @@ describe('CRUD Factory', () => {
         queryKeys: expect.arrayContaining(['page', 'pageSize', 'sortField', 'sortDir']),
       }),
     }))
+  })
+
+  it('GET spreads totalIsCapped only when the engine reports a capped count', async () => {
+    queryEngine.query.mockResolvedValueOnce({
+      items: [{ id: 'id-1', title: 'A', is_done: false }],
+      total: 10_000,
+      page: 1,
+      pageSize: 10,
+      meta: { listCountCapWarning: { entity: 'example.todo', cap: 10_000 } },
+    })
+    const res = await route.GET(new Request('http://x/api/example/todos?page=1&pageSize=10&sortField=id&sortDir=asc'))
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.total).toBe(10_000)
+    expect(body.totalIsCapped).toBe(true)
+    expect(body.meta.listCountCapWarning).toEqual({ entity: 'example.todo', cap: 10_000 })
+  })
+
+  it('GET omits totalIsCapped entirely for exact totals', async () => {
+    const res = await route.GET(new Request('http://x/api/example/todos?page=1&pageSize=10&sortField=id&sortDir=asc'))
+    const body = await res.json()
+    expect('totalIsCapped' in body).toBe(false)
   })
 
   const makeDecoratedRoute = () => makeCrudRoute({
@@ -369,6 +404,107 @@ describe('CRUD Factory', () => {
     expect(queryArgs?.sort).toEqual([
       { field: 'cf:priority', dir: 'desc' },
     ])
+  })
+
+  // Routes that delegate the fallback order to `list.defaultSort` leave `sortField`
+  // optional; a zod `.default()` would make every request look explicitly sorted.
+  const sortableQuerySchema = z.object({
+    page: z.coerce.number().default(1),
+    pageSize: z.coerce.number().default(50),
+    sortField: z.string().optional(),
+    sortDir: z.enum(['asc', 'desc']).optional(),
+  })
+
+  const makeSortedRoute = (list?: Partial<Parameters<typeof makeCrudRoute>[0]['list']>) => makeCrudRoute({
+    metadata: { GET: { requireAuth: true } },
+    orm: { entity: Todo, idField: 'id', orgField: 'organizationId', tenantField: 'tenantId', softDeleteField: 'deletedAt' },
+    indexer: { entityType: 'example.todo' },
+    list: {
+      schema: sortableQuerySchema,
+      entityId: 'example.todo',
+      fields: ['id', 'title'],
+      sortFieldMap: { id: 'id', title: 'title', lineNumber: 'line_number' },
+      buildFilters: () => ({} as any),
+      disableListCache: true,
+      ...list,
+    } as any,
+  })
+
+  it('GET falls back to sorting by id when no default sort is configured', async () => {
+    await makeSortedRoute().GET(new Request('http://x/api/example/todos?page=1&pageSize=10'))
+
+    const queryArgs = queryEngine.query.mock.calls.at(-1)?.[1]
+    expect(queryArgs?.sort).toEqual([{ field: 'id', dir: 'asc' }])
+  })
+
+  it('GET applies list.defaultSort through sortFieldMap when the request omits a sort', async () => {
+    const sortedRoute = makeSortedRoute({
+      defaultSort: { field: 'lineNumber', dir: 'asc' },
+      tiebreakSortField: 'id',
+    })
+
+    await sortedRoute.GET(new Request('http://x/api/example/todos?page=1&pageSize=10'))
+
+    const queryArgs = queryEngine.query.mock.calls.at(-1)?.[1]
+    expect(queryArgs?.sort).toEqual([
+      { field: 'line_number', dir: 'asc' },
+      { field: 'id', dir: 'asc' },
+    ])
+  })
+
+  it('GET honours an explicit sort over list.defaultSort and keeps the tiebreak', async () => {
+    const sortedRoute = makeSortedRoute({
+      defaultSort: { field: 'lineNumber', dir: 'asc' },
+      tiebreakSortField: 'id',
+    })
+
+    await sortedRoute.GET(new Request('http://x/api/example/todos?page=1&pageSize=10&sortField=title&sortDir=desc'))
+
+    const queryArgs = queryEngine.query.mock.calls.at(-1)?.[1]
+    expect(queryArgs?.sort).toEqual([
+      { field: 'title', dir: 'desc' },
+      { field: 'id', dir: 'asc' },
+    ])
+  })
+
+  it('GET keeps an explicit sort ascending by default even when list.defaultSort is descending', async () => {
+    const sortedRoute = makeSortedRoute({ defaultSort: { field: 'title', dir: 'desc' } })
+
+    await sortedRoute.GET(new Request('http://x/api/example/todos?page=1&pageSize=10&sortField=id'))
+
+    const queryArgs = queryEngine.query.mock.calls.at(-1)?.[1]
+    expect(queryArgs?.sort).toEqual([{ field: 'id', dir: 'asc' }])
+  })
+
+  it('GET treats a blank sortField as absent and falls back to list.defaultSort', async () => {
+    const sortedRoute = makeSortedRoute({
+      defaultSort: { field: 'lineNumber', dir: 'asc' },
+      tiebreakSortField: 'id',
+    })
+
+    await sortedRoute.GET(new Request('http://x/api/example/todos?page=1&pageSize=10&sortField='))
+
+    const queryArgs = queryEngine.query.mock.calls.at(-1)?.[1]
+    expect(queryArgs?.sort).toEqual([
+      { field: 'line_number', dir: 'asc' },
+      { field: 'id', dir: 'asc' },
+    ])
+  })
+
+  it('GET keeps falling back to id for a blank sortField when no default is configured', async () => {
+    await makeSortedRoute().GET(new Request('http://x/api/example/todos?page=1&pageSize=10&sortField=&sortDir=desc'))
+
+    const queryArgs = queryEngine.query.mock.calls.at(-1)?.[1]
+    expect(queryArgs?.sort).toEqual([{ field: 'id', dir: 'desc' }])
+  })
+
+  it('GET does not duplicate the tiebreak when it matches the primary sort', async () => {
+    const sortedRoute = makeSortedRoute({ tiebreakSortField: 'id' })
+
+    await sortedRoute.GET(new Request('http://x/api/example/todos?page=1&pageSize=10&sortField=id&sortDir=desc'))
+
+    const queryArgs = queryEngine.query.mock.calls.at(-1)?.[1]
+    expect(queryArgs?.sort).toEqual([{ field: 'id', dir: 'desc' }])
   })
 
   it('GET intersects ids with existing buildFilters id constraint', async () => {
@@ -481,6 +617,45 @@ describe('CRUD Factory', () => {
     expect(ids).toContain(otherTenant.id)
   })
 
+  it('GET resolves function-form CSV headers and rows per request', async () => {
+    // Regression coverage for the additive `(query, ctx)` form of `ListConfig.csv`.
+    // A route whose export columns depend on per-request discovery (custom-field keys,
+    // for example) must resolve them from the request context, never from module-level
+    // state that the previous request left behind.
+    const perRequestColumns = new WeakMap<object, string>()
+    const dynamicCsvRoute = makeCrudRoute({
+      metadata: { GET: { requireAuth: true } },
+      orm: { entity: Todo, idField: 'id', orgField: 'organizationId', tenantField: 'tenantId', softDeleteField: 'deletedAt' },
+      indexer: { entityType: 'example.todo' },
+      list: {
+        schema: querySchema,
+        entityId: 'example.todo',
+        fields: ['id', 'title', 'is_done'],
+        sortFieldMap: { id: 'id' },
+        buildFilters: () => ({} as any),
+        transformItem: (item: any) => ({ id: item.id, title: item.title }),
+        allowCsv: true,
+        csv: {
+          headers: (_query, ctx) => ['id', perRequestColumns.get(ctx) ?? 'fallback'],
+          row: (item: any, ctx) => [item.id, `${perRequestColumns.get(ctx) ?? 'fallback'}:${item.title}`],
+          filename: 'dynamic.csv',
+        },
+      },
+      hooks: {
+        beforeList: (_query, ctx) => {
+          const column = new URL(ctx.request!.url).searchParams.get('column')
+          perRequestColumns.set(ctx, column ?? 'fallback')
+        },
+      },
+    })
+
+    const first = await dynamicCsvRoute.GET(new Request('http://x/api/example/todos?format=csv&column=alpha'))
+    const second = await dynamicCsvRoute.GET(new Request('http://x/api/example/todos?format=csv&column=beta'))
+
+    expect((await first.text()).split('\n')[0]).toBe('id,alpha')
+    expect((await second.text()).split('\n')[0]).toBe('id,beta')
+  })
+
   it('GET returns CSV when format=csv', async () => {
     const res = await route.GET(new Request('http://x/api/example/todos?page=1&pageSize=10&sortField=id&sortDir=asc&format=csv'))
     expect(res.headers.get('content-type')).toContain('text/csv')
@@ -537,12 +712,66 @@ describe('CRUD Factory', () => {
     })
   })
 
+  describe('export loop termination', () => {
+    const EXPORT_PAGE_SIZE = 1000
+
+    afterEach(() => {
+      queryEngine.query.mockImplementation(async (_entityId: any, _q: any) => ({ items: [{ id: 'id-1', title: 'A', is_done: false, organization_id: defaultOrganizationId, tenant_id: defaultTenantId }], total: 1 }))
+    })
+
+    const makeItems = (count: number, offset = 0) =>
+      Array.from({ length: count }, (_, index) => ({
+        id: `id-${offset + index}`,
+        title: `Todo ${offset + index}`,
+        is_done: false,
+        organization_id: defaultOrganizationId,
+        tenant_id: defaultTenantId,
+      }))
+
+    const queuePages = (pages: Array<Array<Record<string, unknown>>>, total: number) => {
+      queryEngine.query.mockImplementation(async (_entityId: any, q: any) => {
+        const page = q?.page?.page ?? 1
+        return { items: pages[page - 1] ?? [], total }
+      })
+    }
+
+    it('GET export enumerates every page even when total under-reports the result set', async () => {
+      queuePages(
+        [makeItems(EXPORT_PAGE_SIZE), makeItems(EXPORT_PAGE_SIZE, EXPORT_PAGE_SIZE), makeItems(5, EXPORT_PAGE_SIZE * 2)],
+        3,
+      )
+      const res = await route.GET(new Request('http://x/api/example/todos?format=json'))
+      expect(res.status).toBe(200)
+      const parsed = JSON.parse(await res.text())
+      expect(parsed).toHaveLength(EXPORT_PAGE_SIZE * 2 + 5)
+      expect(queryEngine.query).toHaveBeenCalledTimes(3)
+    })
+
+    it('GET export terminates on a short final page instead of trusting an inflated total', async () => {
+      queuePages([makeItems(4)], 10_000)
+      const res = await route.GET(new Request('http://x/api/example/todos?format=json'))
+      expect(res.status).toBe(200)
+      const parsed = JSON.parse(await res.text())
+      expect(parsed).toHaveLength(4)
+      expect(queryEngine.query).toHaveBeenCalledTimes(1)
+    })
+
+    it('GET export fails closed at the page ceiling rather than serializing a partial export', async () => {
+      const fullPage = makeItems(EXPORT_PAGE_SIZE)
+      queryEngine.query.mockImplementation(async () => ({ items: fullPage, total: EXPORT_PAGE_SIZE }))
+      const res = await route.GET(new Request('http://x/api/example/todos?format=json'))
+      expect(res.status).toBe(500)
+      expect(queryEngine.query).toHaveBeenCalledTimes(1000)
+    })
+  })
+
   it('POST creates entity, saves custom fields, emits created event', async () => {
     const res = await route.POST(new Request('http://x/api/example/todos', { method: 'POST', body: JSON.stringify({ title: 'B', is_done: true, cf_priority: 3 }), headers: { 'content-type': 'application/json' } }))
     expect(res.status).toBe(201)
     const data = await res.json()
     expect(data.id).toBeDefined()
     // CF saved
+    expect(mockDataEngine.setCustomFields).toHaveBeenCalledWith(expect.objectContaining({ notify: false }))
     expect(setRecordCustomFields).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ entityId: 'example.todo', values: { priority: 3 } }))
     // Event + indexer delegated to data engine
     expect(mockDataEngine.emitOrmEntityEvent).toHaveBeenCalledTimes(1)
@@ -569,6 +798,7 @@ describe('CRUD Factory', () => {
     await em.persist(created).flush()
     const res = await route.PUT(new Request('http://x/api/example/todos', { method: 'PUT', body: JSON.stringify({ id: created.id, title: 'X2', cf_priority: 5 }), headers: { 'content-type': 'application/json' } }))
     expect(res.status).toBe(200)
+    expect(mockDataEngine.setCustomFields).toHaveBeenCalledWith(expect.objectContaining({ notify: false }))
     expect(setRecordCustomFields).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ values: { priority: 5 } }))
     expect(mockDataEngine.emitOrmEntityEvent).toHaveBeenCalledTimes(1)
     const updatedCall = mockDataEngine.emitOrmEntityEvent.mock.calls.at(0)
@@ -588,6 +818,34 @@ describe('CRUD Factory', () => {
     expect(Object.values(db)).toHaveLength(0)
     // No created event/index is emitted for a rolled-back create
     expect(mockDataEngine.emitOrmEntityEvent).not.toHaveBeenCalled()
+  })
+
+  it('returns a retryable 503 when a handler hits a transient DB connection failure', async () => {
+    setRecordCustomFields.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('sorry, too many clients already'), { code: '53300' })
+    })
+    const res = await route.POST(new Request('http://x/api/example/todos', { method: 'POST', body: JSON.stringify({ title: 'Exhausted', is_done: true, cf_priority: 3 }), headers: { 'content-type': 'application/json' } }))
+    expect(res.status).toBe(503)
+    expect(res.headers.get('Retry-After')).toBe('2')
+    // The failed write is still rolled back — no created event/index leaks out.
+    expect(Object.values(db)).toHaveLength(0)
+    expect(mockDataEngine.emitOrmEntityEvent).not.toHaveBeenCalled()
+  })
+
+  it('POST surfaces CRUD side-effect failures after custom field writes', async () => {
+    mockDataEngine.emitOrmEntityEvent.mockImplementationOnce(async () => {
+      throw new Error('index write failed')
+    })
+
+    const res = await route.POST(new Request('http://x/api/example/todos', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Indexed', is_done: true, cf_priority: 3 }),
+      headers: { 'content-type': 'application/json' },
+    }))
+
+    expect(res.status).toBe(500)
+    expect(mockDataEngine.setCustomFields).toHaveBeenCalledWith(expect.objectContaining({ notify: false }))
+    expect(mockDataEngine.emitOrmEntityEvent).toHaveBeenCalledTimes(1)
   })
 
   it('PUT rolls back the entity update when the custom field write fails', async () => {
@@ -721,6 +979,398 @@ describe('CRUD Factory', () => {
     expect(mockDataEngine.emitOrmEntityEvent).not.toHaveBeenCalled()
   })
 
+  it('POST command route runs mutation guards before executing the command', async () => {
+    const guardValidate = jest.fn(async (_input: any) => ({ ok: false, status: 403, message: 'Blocked by test guard' }))
+    registerMutationGuards([{ moduleId: 'example', guards: [{
+      id: 'example.block-command-create',
+      targetEntity: 'example.todo',
+      operations: ['create'],
+      validate: guardValidate,
+    }] }])
+    const commandRoute = makeCrudRoute({
+      metadata: { POST: { requireAuth: true } },
+      orm: { entity: Todo, idField: 'id', orgField: 'organizationId', tenantField: 'tenantId', softDeleteField: 'deletedAt' },
+      indexer: { entityType: 'example.todo' },
+      actions: {
+        create: {
+          commandId: 'example.todo.create',
+          schema: createSchema,
+          response: () => ({ ok: true }),
+        },
+      },
+    })
+
+    const res = await commandRoute.POST(new Request('http://x/api/example/todos/command', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'A' }),
+      headers: { 'content-type': 'application/json' },
+    }))
+
+    expect(res.status).toBe(403)
+    expect(guardValidate).toHaveBeenCalledWith(expect.objectContaining({
+      resourceKind: 'example.todo',
+      resourceId: null,
+      operation: 'create',
+      mutationPayload: expect.objectContaining({ title: 'A' }),
+    }))
+    expect(commandBus.execute).not.toHaveBeenCalled()
+  })
+
+  it('POST command route merges guard modifiedPayload and runs afterSuccess with the command result id', async () => {
+    commandBus.execute.mockResolvedValue({ result: { id: 'cmd-created-1' }, logEntry: { id: 'log-1' } })
+    const guardAfterSuccess = jest.fn(async () => {})
+    registerMutationGuards([{ moduleId: 'example', guards: [{
+      id: 'example.rewrite-command-create',
+      targetEntity: 'example.todo',
+      operations: ['create'],
+      validate: async (_input: any) => ({ ok: true, modifiedPayload: { title: 'FROM-GUARD' }, shouldRunAfterSuccess: true }),
+      afterSuccess: guardAfterSuccess,
+    }] }])
+    const commandRoute = makeCrudRoute({
+      metadata: { POST: { requireAuth: true } },
+      orm: { entity: Todo, idField: 'id', orgField: 'organizationId', tenantField: 'tenantId', softDeleteField: 'deletedAt' },
+      indexer: { entityType: 'example.todo' },
+      actions: {
+        create: {
+          commandId: 'example.todo.create',
+          schema: createSchema,
+          response: () => ({ ok: true }),
+        },
+      },
+    })
+
+    const res = await commandRoute.POST(new Request('http://x/api/example/todos/command', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'A' }),
+      headers: { 'content-type': 'application/json' },
+    }))
+
+    expect(res.status).toBe(201)
+    expect(commandBus.execute).toHaveBeenCalledWith('example.todo.create', expect.objectContaining({
+      input: expect.objectContaining({ title: 'FROM-GUARD' }),
+    }))
+    expect(guardAfterSuccess).toHaveBeenCalledWith(expect.objectContaining({
+      resourceId: 'cmd-created-1',
+      operation: 'create',
+    }))
+  })
+
+  // Issue #5045 — a deliberate interceptor rejection must not be laundered into a generic 500.
+  const interceptorErrorRoute = () => makeCrudRoute({
+    metadata: { POST: { requireAuth: true } },
+    orm: { entity: Todo, idField: 'id', orgField: 'organizationId', tenantField: 'tenantId', softDeleteField: 'deletedAt' },
+    indexer: { entityType: 'example.todo' },
+    actions: {
+      create: {
+        commandId: 'example.todo.create',
+        schema: createSchema,
+        response: () => ({ ok: true }),
+      },
+    },
+  })
+
+  const postInterceptorErrorRequest = (route: ReturnType<typeof interceptorErrorRoute>) => route.POST(
+    new Request('http://x/api/example/todos/command', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'A' }),
+      headers: { 'content-type': 'application/json' },
+    }),
+  )
+
+  it('POST command route keeps the generic 500 when an interceptor blocks without a status', async () => {
+    commandBus.execute.mockRejectedValue(new CommandInterceptorError('Missing required fields: VAT id'))
+
+    const res = await postInterceptorErrorRequest(interceptorErrorRoute())
+
+    expect(res.status).toBe(500)
+    await expect(res.json()).resolves.toEqual({
+      error: 'Internal server error',
+      message: 'Something went wrong. Please try again later.',
+      requestId: expect.any(String),
+    })
+  })
+
+  it('POST command route surfaces the interceptor status and message when the block carries a status', async () => {
+    commandBus.execute.mockRejectedValue(
+      new CommandInterceptorError('Missing required fields: VAT id', { status: 422 }),
+    )
+
+    const res = await postInterceptorErrorRequest(interceptorErrorRoute())
+
+    expect(res.status).toBe(422)
+    await expect(res.json()).resolves.toEqual({ error: 'Missing required fields: VAT id' })
+  })
+
+  it('POST command route surfaces the interceptor body verbatim when one is supplied', async () => {
+    commandBus.execute.mockRejectedValue(
+      new CommandInterceptorError('Blocked', { status: 422, body: { error: 'Blocked', missingFields: ['vatId'] } }),
+    )
+
+    const res = await postInterceptorErrorRequest(interceptorErrorRoute())
+
+    expect(res.status).toBe(422)
+    await expect(res.json()).resolves.toEqual({ error: 'Blocked', missingFields: ['vatId'] })
+  })
+
+  it('POST command route keeps the generic 500 when the interceptor status is outside 4xx/5xx', async () => {
+    // A status the Response constructor would reject (or that would report a block as success)
+    // must not escape handleError as a RangeError — it falls back to the generic 500 instead.
+    commandBus.execute.mockRejectedValue(
+      Object.assign(new CommandInterceptorError('Blocked'), { status: 600, body: { error: 'Blocked' } }),
+    )
+
+    const res = await postInterceptorErrorRequest(interceptorErrorRoute())
+
+    expect(res.status).toBe(500)
+    await expect(res.json()).resolves.toEqual({
+      error: 'Internal server error',
+      message: 'Something went wrong. Please try again later.',
+      requestId: expect.any(String),
+    })
+  })
+
+  // Issue #5608 — a generic 500 must carry a requestId the client/support can cite, and
+  // that same id must appear on the server log line so the two can be correlated.
+  describe('generic 500 requestId correlation', () => {
+    const logRecords: LoggerExtensionRecord[] = []
+    const reportError = jest.fn()
+
+    const postWithRequestId = (requestId: string) => interceptorErrorRoute().POST(
+      new Request('http://x/api/example/todos/command', {
+        method: 'POST',
+        body: JSON.stringify({ title: 'A' }),
+        headers: { 'content-type': 'application/json', 'x-request-id': requestId },
+      }),
+    )
+
+    beforeEach(() => {
+      logRecords.length = 0
+      reportError.mockClear()
+      registerLoggerExtension({ emit: (record) => logRecords.push(record) })
+      registerTelemetryRuntime({
+        canUseGlobalTracePropagation: () => false,
+        captureTraceContext: () => ({}),
+        continueTrace: (_carrier, _name, fn) => fn(),
+        recordHttpDuration: () => {},
+        reportError,
+        shutdown: async () => {},
+      } satisfies TelemetryRuntime)
+    })
+
+    afterEach(() => {
+      resetLoggerExtension()
+      resetTelemetryRuntime()
+    })
+
+    it('includes a requestId in the body that matches the server log line', async () => {
+      commandBus.execute.mockRejectedValue(new Error('boom'))
+
+      const res = await postInterceptorErrorRequest(interceptorErrorRoute())
+      const body = await res.json()
+
+      expect(res.status).toBe(500)
+      expect(typeof body.requestId).toBe('string')
+      expect(body.requestId.length).toBeGreaterThan(0)
+
+      const logRecord = logRecords.find((record) => record.message === 'Unexpected CRUD error')
+      expect(logRecord?.fields.requestId).toBe(body.requestId)
+    })
+
+    it('echoes the requestId on an x-request-id response header', async () => {
+      commandBus.execute.mockRejectedValue(new Error('boom'))
+
+      const res = await postInterceptorErrorRequest(interceptorErrorRoute())
+      const body = await res.json()
+
+      expect(res.headers.get('x-request-id')).toBe(body.requestId)
+    })
+
+    it('reuses an inbound x-request-id header instead of generating a new one', async () => {
+      commandBus.execute.mockRejectedValue(new Error('boom'))
+
+      const res = await postWithRequestId('req-fixed-123')
+      const body = await res.json()
+
+      expect(res.status).toBe(500)
+      expect(body.requestId).toBe('req-fixed-123')
+      const logRecord = logRecords.find((record) => record.message === 'Unexpected CRUD error')
+      expect(logRecord?.fields.requestId).toBe('req-fixed-123')
+    })
+
+    // `Headers.get()` returns '' for an empty or whitespace-only header, which a plain
+    // `?? randomUUID()` would hand straight through as a blank correlation id.
+    it.each([
+      ['an empty inbound header', ''],
+      ['a whitespace-only inbound header', '   '],
+    ])('generates a fresh id for %s', async (_label, inbound) => {
+      commandBus.execute.mockRejectedValue(new Error('boom'))
+
+      const res = await postWithRequestId(inbound)
+      const body = await res.json()
+
+      expect(res.status).toBe(500)
+      expect(typeof body.requestId).toBe('string')
+      expect(body.requestId.length).toBeGreaterThan(0)
+      const logRecord = logRecords.find((record) => record.message === 'Unexpected CRUD error')
+      expect(logRecord?.fields.requestId).toBe(body.requestId)
+    })
+
+    // A caller-controlled id lands verbatim in the unquoted `key=value` log line, so an
+    // over-long one or one carrying spaces/`=` is discarded rather than echoed.
+    it.each([
+      ['a value carrying log-field separators', 'a=1 tenantId=victim'],
+      ['an over-long value', 'x'.repeat(129)],
+    ])('discards %s in favor of a generated id', async (_label, inbound) => {
+      commandBus.execute.mockRejectedValue(new Error('boom'))
+
+      const res = await postWithRequestId(inbound)
+      const body = await res.json()
+
+      expect(res.status).toBe(500)
+      expect(body.requestId).not.toBe(inbound)
+      expect(body.requestId).toMatch(/^[A-Za-z0-9-]{36}$/)
+    })
+
+    it('reports the error to telemetry with the same requestId', async () => {
+      commandBus.execute.mockRejectedValue(new Error('boom'))
+
+      const res = await postWithRequestId('req-fixed-123')
+      const body = await res.json()
+
+      expect(body.requestId).toBe('req-fixed-123')
+      expect(reportError).toHaveBeenCalledTimes(1)
+      expect(reportError).toHaveBeenCalledWith(
+        expect.any(Error),
+        { module: 'crud', attributes: { requestId: 'req-fixed-123', errorName: 'Error' } },
+      )
+    })
+
+    // The 503/422 branches deliberately stay outside this change (issue #5608) — lock that
+    // in so a later refactor cannot quietly widen the correlation id across every branch.
+    it('leaves the interceptor-rejection branch without a requestId', async () => {
+      commandBus.execute.mockRejectedValue(
+        new CommandInterceptorError('Missing required fields: VAT id', { status: 422 }),
+      )
+
+      const res = await postWithRequestId('req-fixed-123')
+
+      expect(res.status).toBe(422)
+      await expect(res.json()).resolves.toEqual({ error: 'Missing required fields: VAT id' })
+      expect(res.headers.get('x-request-id')).toBeNull()
+    })
+  })
+
+  it('POST command route falls back to the response payload id for guard afterSuccess', async () => {
+    commandBus.execute.mockResolvedValue({ result: { lineId: 'line-42' }, logEntry: { id: 'log-1' } })
+    const guardAfterSuccess = jest.fn(async () => {})
+    registerMutationGuards([{ moduleId: 'example', guards: [{
+      id: 'example.after-command-create',
+      targetEntity: 'example.todo',
+      operations: ['create'],
+      validate: async (_input: any) => ({ ok: true, shouldRunAfterSuccess: true }),
+      afterSuccess: guardAfterSuccess,
+    }] }])
+    const commandRoute = makeCrudRoute({
+      metadata: { POST: { requireAuth: true } },
+      orm: { entity: Todo, idField: 'id', orgField: 'organizationId', tenantField: 'tenantId', softDeleteField: 'deletedAt' },
+      indexer: { entityType: 'example.todo' },
+      actions: {
+        create: {
+          commandId: 'example.todo.create',
+          schema: createSchema,
+          response: ({ result }: any) => ({ id: result.lineId }),
+        },
+      },
+    })
+
+    const res = await commandRoute.POST(new Request('http://x/api/example/todos/command', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'A' }),
+      headers: { 'content-type': 'application/json' },
+    }))
+
+    expect(res.status).toBe(201)
+    expect(guardAfterSuccess).toHaveBeenCalledWith(expect.objectContaining({
+      resourceId: 'line-42',
+      operation: 'create',
+    }))
+  })
+
+  // Commands whose mapInput wraps the payload (e.g. `{ body }`) null the factory
+  // candidateId and thereby OPT OUT of row-level mutation guards, leaving the
+  // command-level optimistic-lock check as the sole guard — a documented contract
+  // (apps/docs/docs/framework/data-integrity/concurrency-locking.mdx) that sales
+  // line/adjustment routes rely on.
+  it('PUT command route without a top-level id keeps the documented row-level guard opt-out', async () => {
+    crudMutationGuardService = {
+      validateMutation: jest.fn().mockResolvedValue({ ok: true, shouldRunAfterSuccess: false }),
+      afterMutationSuccess: jest.fn().mockResolvedValue(undefined),
+    }
+    const guardValidate = jest.fn(async (_input: any) => ({ ok: false, status: 409, message: 'must not run' }))
+    registerMutationGuards([{ moduleId: 'example', guards: [{
+      id: 'example.idless-update-opt-out',
+      targetEntity: 'example.todo',
+      operations: ['update'],
+      validate: guardValidate,
+    }] }])
+    const commandRoute = makeCrudRoute({
+      metadata: { PUT: { requireAuth: true } },
+      orm: { entity: Todo, idField: 'id', orgField: 'organizationId', tenantField: 'tenantId', softDeleteField: 'deletedAt' },
+      indexer: { entityType: 'example.todo' },
+      actions: {
+        update: {
+          commandId: 'example.todo.update',
+          schema: z.object({ title: z.string() }),
+          mapInput: ({ parsed }: any) => ({ body: parsed }),
+          response: () => ({ ok: true }),
+        },
+      },
+    })
+
+    const res = await commandRoute.PUT(new Request('http://x/api/example/todos/command', {
+      method: 'PUT',
+      body: JSON.stringify({ title: 'nested id shape' }),
+      headers: { 'content-type': 'application/json' },
+    }))
+
+    expect(res.status).toBe(200)
+    expect(guardValidate).not.toHaveBeenCalled()
+    expect(crudMutationGuardService.validateMutation).not.toHaveBeenCalled()
+    expect(commandBus.execute).toHaveBeenCalledWith('example.todo.update', expect.anything())
+  })
+
+  it('DELETE command route without any id keeps the documented row-level guard opt-out', async () => {
+    const guardValidate = jest.fn(async (_input: any) => ({ ok: false, status: 403, message: 'must not run' }))
+    registerMutationGuards([{ moduleId: 'example', guards: [{
+      id: 'example.idless-delete-opt-out',
+      targetEntity: 'example.todo',
+      operations: ['delete'],
+      validate: guardValidate,
+    }] }])
+    const commandRoute = makeCrudRoute({
+      metadata: { DELETE: { requireAuth: true } },
+      orm: { entity: Todo, idField: 'id', orgField: 'organizationId', tenantField: 'tenantId', softDeleteField: 'deletedAt' },
+      indexer: { entityType: 'example.todo' },
+      actions: {
+        delete: {
+          commandId: 'example.todo.delete',
+          schema: z.any(),
+          response: () => ({ ok: true }),
+        },
+      },
+    })
+
+    const res = await commandRoute.DELETE(new Request('http://x/api/example/todos/command', {
+      method: 'DELETE',
+      body: JSON.stringify({}),
+      headers: { 'content-type': 'application/json' },
+    }))
+
+    expect(res.status).toBe(200)
+    expect(guardValidate).not.toHaveBeenCalled()
+    expect(commandBus.execute).toHaveBeenCalledWith('example.todo.delete', expect.anything())
+  })
+
   it('POST is blocked by interceptor before hook', async () => {
     registerApiInterceptors([
       {
@@ -783,6 +1433,85 @@ describe('CRUD Factory', () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body._interceptor).toEqual({ ok: true, count: 1 })
+  })
+
+  // The command DELETE path used to hand before-interceptors the body only, so a
+  // guard reading `?id=` saw nothing to object to and the delete went through
+  // with a 200 (issue #4842).
+  it('DELETE command route passes the query id to interceptor before hooks', async () => {
+    const lockedId = '123e4567-e89b-12d3-a456-426614174010'
+    const seenQueries: Array<Record<string, unknown> | undefined> = []
+    registerApiInterceptors([
+      {
+        moduleId: 'example',
+        interceptors: [
+          {
+            id: 'example.block-locked-delete',
+            targetRoute: 'example/todos/command',
+            methods: ['DELETE'],
+            async before(request) {
+              seenQueries.push(request.query)
+              const queryId = request.query?.id
+              if (typeof queryId === 'string' && queryId === lockedId) {
+                return { ok: false, statusCode: 409, message: 'Record is locked' }
+              }
+              return { ok: true }
+            },
+          },
+        ],
+      },
+    ])
+    const commandRoute = makeCrudRoute({
+      metadata: { DELETE: { requireAuth: true } },
+      orm: { entity: Todo, idField: 'id', orgField: 'organizationId', tenantField: 'tenantId', softDeleteField: 'deletedAt' },
+      indexer: { entityType: 'example.todo' },
+      actions: {
+        delete: {
+          commandId: 'example.todo.delete',
+          schema: z.any(),
+          response: () => ({ ok: true }),
+        },
+      },
+    })
+
+    const res = await commandRoute.DELETE(new Request(`http://x/api/example/todos/command?id=${lockedId}`, {
+      method: 'DELETE',
+      body: JSON.stringify({}),
+      headers: { 'content-type': 'application/json' },
+    }))
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ error: 'Record is locked' })
+    expect(seenQueries).toEqual([{ id: lockedId }])
+    expect(commandBus.execute).not.toHaveBeenCalled()
+  })
+
+  it('DELETE route passes the whole query string to interceptor before hooks', async () => {
+    const created = em.create(Todo, { title: 'Z', organizationId: defaultOrganizationId, tenantId: defaultTenantId }) as Rec
+    created.id = '123e4567-e89b-12d3-a456-426614174011'
+    await em.persist(created).flush()
+    let seenQuery: Record<string, unknown> | undefined
+    registerApiInterceptors([
+      {
+        moduleId: 'example',
+        interceptors: [
+          {
+            id: 'example.capture-delete-query',
+            targetRoute: 'example/todos',
+            methods: ['DELETE'],
+            async before(request) {
+              seenQuery = request.query
+              return { ok: true }
+            },
+          },
+        ],
+      },
+    ])
+
+    const res = await route.DELETE(new Request(`http://x/api/example/todos?id=${created.id}&reason=cleanup`, { method: 'DELETE' }))
+
+    expect(res.status).toBe(200)
+    expect(seenQuery).toEqual({ id: created.id, reason: 'cleanup' })
   })
 })
 
