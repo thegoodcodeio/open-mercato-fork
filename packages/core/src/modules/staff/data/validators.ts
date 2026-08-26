@@ -385,6 +385,10 @@ export const staffMyProjectVisibilityUpdateSchema = z.object({
   showInGrid: z.boolean(),
 })
 
+export const staffTimesheetPreferenceUpdateSchema = z.object({
+  lastProjectId: z.string().uuid().nullable(),
+})
+
 export type StaffTimeEntryCreateInput = z.infer<typeof staffTimeEntryCreateSchema>
 export type StaffTimeEntryUpdateInput = z.infer<typeof staffTimeEntryUpdateSchema>
 export type StaffTimeEntryStartTimerInput = z.infer<typeof staffTimeEntryStartTimerSchema>
@@ -398,3 +402,4 @@ export type StaffTimeProjectUpdateInput = z.infer<typeof staffTimeProjectUpdateS
 export type StaffTimeProjectMemberAssignInput = z.infer<typeof staffTimeProjectMemberAssignSchema>
 export type StaffTimeProjectMemberUpdateInput = z.infer<typeof staffTimeProjectMemberUpdateSchema>
 export type StaffMyProjectVisibilityUpdateInput = z.infer<typeof staffMyProjectVisibilityUpdateSchema>
+export type StaffTimesheetPreferenceUpdateInput = z.infer<typeof staffTimesheetPreferenceUpdateSchema>

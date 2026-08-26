@@ -89,8 +89,12 @@ export function analyze(root, baseline) {
   const rootBytes = fileBytes(path.join(root, INSTRUCTION_FILE))
   if (rootBytes === null) throw new Error(`Missing ${INSTRUCTION_FILE} in ${root}`)
 
+  // Explicit comparator for the sort guard, but not `localeCompare`: that is
+  // ICU- and locale-dependent, so the same chain list could order differently on
+  // a developer machine and in CI. These are repo-relative paths, so ordering
+  // them by code unit is both deterministic and the intuitive result.
   const chains = Object.keys(baseline.chains)
-    .sort()
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
     .map((chainDir) => {
       const files = collectChainFiles(root, chainDir)
       const bytes = files.reduce((total, file) => total + file.bytes, 0)
