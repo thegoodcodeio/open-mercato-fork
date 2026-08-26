@@ -1099,6 +1099,7 @@
   "staff.timesheets.projects.form.status": "Status",
   "staff.timesheets.projects.inactive_employees": "Inactive Employees",
   "staff.timesheets.projects.loading": "Loading project...",
+  "staff.timesheets.projects.loadingPermissions": "Checking your project permissions...",
   "staff.timesheets.projects.messages.deleted": "Project deleted.",
   "staff.timesheets.projects.messages.saved": "Project saved.",
   "staff.timesheets.projects.page.description": "Manage time tracking projects.",

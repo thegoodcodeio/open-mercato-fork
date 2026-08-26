@@ -1099,6 +1099,7 @@
   "staff.timesheets.projects.form.status": "상태",
   "staff.timesheets.projects.inactive_employees": "비활성 직원",
   "staff.timesheets.projects.loading": "프로젝트를 불러오는 중...",
+  "staff.timesheets.projects.loadingPermissions": "프로젝트 권한을 확인하는 중...",
   "staff.timesheets.projects.messages.deleted": "프로젝트가 삭제되었습니다.",
   "staff.timesheets.projects.messages.saved": "프로젝트가 저장되었습니다.",
   "staff.timesheets.projects.page.description": "시간 추적 프로젝트를 관리합니다.",

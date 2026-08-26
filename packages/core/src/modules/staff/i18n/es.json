@@ -1099,6 +1099,7 @@
   "staff.timesheets.projects.form.status": "Estado",
   "staff.timesheets.projects.inactive_employees": "Empleados inactivos",
   "staff.timesheets.projects.loading": "Cargando proyecto...",
+  "staff.timesheets.projects.loadingPermissions": "Comprobando tus permisos de proyecto...",
   "staff.timesheets.projects.messages.deleted": "Proyecto eliminado.",
   "staff.timesheets.projects.messages.saved": "Proyecto guardado.",
   "staff.timesheets.projects.page.description": "Gestiona los proyectos de registro de tiempo.",

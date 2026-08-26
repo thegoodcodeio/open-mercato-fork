@@ -1099,6 +1099,7 @@
   "staff.timesheets.projects.form.status": "Status",
   "staff.timesheets.projects.inactive_employees": "Inaktive Mitarbeiter",
   "staff.timesheets.projects.loading": "Projekt wird geladen...",
+  "staff.timesheets.projects.loadingPermissions": "Projektberechtigungen werden geprüft...",
   "staff.timesheets.projects.messages.deleted": "Projekt gelöscht.",
   "staff.timesheets.projects.messages.saved": "Projekt gespeichert.",
   "staff.timesheets.projects.page.description": "Zeiterfassungsprojekte verwalten.",
