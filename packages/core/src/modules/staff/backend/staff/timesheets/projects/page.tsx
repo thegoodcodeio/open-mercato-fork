@@ -10,12 +10,14 @@ import { DataTable, withDataTableNamespaces } from '@open-mercato/ui/backend/Dat
 import type { FilterDef, FilterValues } from '@open-mercato/ui/backend/FilterOverlay'
 import { RowActions } from '@open-mercato/ui/backend/RowActions'
 import { Button } from '@open-mercato/ui/primitives/button'
+import type { ReadApiResultOrThrowOptions } from '@open-mercato/ui/backend/utils/apiCall'
 import { readApiResultOrThrow, withScopedApiRequestHeaders } from '@open-mercato/ui/backend/utils/apiCall'
 import { buildOptimisticLockHeader } from '@open-mercato/ui/backend/utils/optimisticLock'
 import { surfaceRecordConflict } from '@open-mercato/ui/backend/conflicts'
 import { deleteCrud } from '@open-mercato/ui/backend/utils/crud'
 import { flash } from '@open-mercato/ui/backend/FlashMessages'
 import { useConfirmDialog } from '@open-mercato/ui/backend/confirm-dialog'
+import { LoadingMessage } from '@open-mercato/ui/backend/detail'
 import { useOrganizationScopeVersion } from '@open-mercato/shared/lib/frontend/useOrganizationScope'
 import { useT, type TranslateFn } from '@open-mercato/shared/lib/i18n/context'
 import { formatDateTime } from '@open-mercato/shared/lib/time'
@@ -48,6 +50,10 @@ const logger = createLogger('staff')
 
 const PAGE_SIZE = 50
 const INCLUDE_FIELDS = 'hoursWeek,hoursTrend,members,myRole'
+const REQUEST_TIMEOUT_MS = 12_000
+type TimedReadOptions<TReturn> = ReadApiResultOrThrowOptions<TReturn> & {
+  allowNullResult?: false
+}
 
 type StaffEnrichment = {
   hoursWeek?: number
@@ -83,6 +89,44 @@ type ProjectsResponse = {
 }
 
 type KpisResponse = PmKpis | CollabKpis
+
+type FeatureCheckResponse = {
+  granted?: string[]
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'name' in error &&
+    (error as { name?: string }).name === 'AbortError'
+  )
+}
+
+async function readApiResultWithTimeout<TReturn = Record<string, unknown>>(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  options?: TimedReadOptions<TReturn>,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<TReturn> {
+  const controller = new AbortController()
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs)
+
+  try {
+    return await readApiResultOrThrow<TReturn>(
+      input,
+      { ...(init ?? {}), signal: controller.signal },
+      options,
+    )
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw new Error(options?.errorMessage ?? 'Request timed out.')
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timeoutId)
+  }
+}
 
 function formatRelativeTime(iso: string | null, fallback: string, t: TranslateFn): string {
   if (!iso) return fallback
@@ -197,6 +241,8 @@ export default function TimesheetProjectsPage() {
   const [reloadToken, setReloadToken] = React.useState(0)
   const [kpis, setKpis] = React.useState<KpisResponse | null>(null)
   const [isLoadingKpis, setIsLoadingKpis] = React.useState(true)
+  const [canManageProjects, setCanManageProjects] = React.useState(false)
+  const [isCheckingPermissions, setIsCheckingPermissions] = React.useState(true)
 
   const activeTab = searchParams.get('tab') ?? 'all'
   const urlViewMode = searchParams.get('view')
@@ -310,7 +356,7 @@ export default function TimesheetProjectsPage() {
     [labels],
   )
 
-  const isPmRole = kpis?.role === 'pm'
+  const isPmRole = canManageProjects
 
   const filters = React.useMemo<FilterDef[]>(
     () => [
@@ -349,10 +395,33 @@ export default function TimesheetProjectsPage() {
   }
   const mineFromTab = (tabId: string): boolean => tabId === 'mine' || !isPmRole
 
+  const loadPermissions = React.useCallback(async () => {
+    setIsCheckingPermissions(true)
+    try {
+      const result = await readApiResultWithTimeout<FeatureCheckResponse>(
+        '/api/auth/feature-check',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            features: ['staff.timesheets.projects.manage'],
+          }),
+        },
+        { errorMessage: labels.errors.load, fallback: { granted: [] } },
+      )
+      const granted = Array.isArray(result?.granted) ? result.granted : []
+      setCanManageProjects(granted.includes('staff.timesheets.projects.manage'))
+    } catch {
+      setCanManageProjects(false)
+    } finally {
+      setIsCheckingPermissions(false)
+    }
+  }, [labels.errors.load])
+
   const loadKpis = React.useCallback(async () => {
     setIsLoadingKpis(true)
     try {
-      const payload = await readApiResultOrThrow<KpisResponse>(
+      const payload = await readApiResultWithTimeout<KpisResponse>(
         '/api/staff/timesheets/projects/kpis',
         undefined,
         {
@@ -369,6 +438,7 @@ export default function TimesheetProjectsPage() {
   }, [labels.errors.load])
 
   const loadProjects = React.useCallback(async () => {
+    if (isCheckingPermissions) return
     if (hasLoadedOnceRef.current) {
       setIsRefreshing(true)
     } else {
@@ -393,7 +463,7 @@ export default function TimesheetProjectsPage() {
       }
       if (mineFromTab(activeTab)) params.set('mine', '1')
 
-      const payload = await readApiResultOrThrow<ProjectsResponse>(
+      const payload = await readApiResultWithTimeout<ProjectsResponse>(
         `/api/staff/timesheets/time-projects?${params.toString()}`,
         undefined,
         { errorMessage: labels.errors.load, fallback: { items: [], total: 0, totalPages: 1 } },
@@ -415,15 +485,21 @@ export default function TimesheetProjectsPage() {
       setIsRefreshing(false)
       hasLoadedOnceRef.current = true
     }
-  }, [labels.errors.load, page, search, sorting, filterValues.status, activeTab, isPmRole])
+  }, [labels.errors.load, page, search, sorting, filterValues.status, activeTab, isPmRole, isCheckingPermissions])
 
   React.useEffect(() => {
+    void loadPermissions()
+  }, [loadPermissions, scopeVersion])
+
+  React.useEffect(() => {
+    if (isCheckingPermissions) return
     void loadKpis()
-  }, [loadKpis, scopeVersion, reloadToken])
+  }, [loadKpis, scopeVersion, reloadToken, isCheckingPermissions])
 
   React.useEffect(() => {
+    if (isCheckingPermissions) return
     void loadProjects()
-  }, [loadProjects, scopeVersion, reloadToken])
+  }, [loadProjects, scopeVersion, reloadToken, isCheckingPermissions])
 
   const handleTabSelect = React.useCallback(
     (id: string) => {
@@ -618,7 +694,7 @@ export default function TimesheetProjectsPage() {
     [labels.card, labels.statuses],
   )
 
-  const canManage = isPmRole
+  const canManage = canManageProjects
 
   const emptyStateCopy = React.useMemo(() => {
     const hasFiltersApplied = activeTab !== 'all' || search.trim().length > 0 || Object.values(filterValues).some(Boolean)
@@ -648,6 +724,17 @@ export default function TimesheetProjectsPage() {
         <div className="mb-4">
           <ProjectsKpiStrip kpis={kpis} labels={kpiLabels} isLoading={isLoadingKpis} />
         </div>
+
+        {isCheckingPermissions ? (
+          <div className="mb-4">
+            <LoadingMessage
+              label={t(
+                'staff.timesheets.projects.loadingPermissions',
+                'Checking your project permissions...',
+              )}
+            />
+          </div>
+        ) : null}
 
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <SavedViewTabs
@@ -727,6 +814,10 @@ export default function TimesheetProjectsPage() {
               canManage ? (
                 <Button asChild size="sm">
                   <Link href="/backend/staff/timesheets/projects/create">{labels.actions.add}</Link>
+                </Button>
+              ) : isCheckingPermissions ? (
+                <Button size="sm" type="button" disabled>
+                  {labels.actions.add}
                 </Button>
               ) : undefined
             }

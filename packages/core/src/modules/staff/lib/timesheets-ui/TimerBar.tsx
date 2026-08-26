@@ -1,17 +1,24 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useId } from 'react'
 import { Play, Square } from 'lucide-react'
 import { Button } from '@open-mercato/ui/primitives/button'
 import { IconButton } from '@open-mercato/ui/primitives/icon-button'
+import { SearchInput } from '@open-mercato/ui/primitives/search-input'
+import { SimpleTooltip } from '@open-mercato/ui/primitives/tooltip'
 import { useT } from '@open-mercato/shared/lib/i18n/context'
 import { apiCallOrThrow } from '@open-mercato/ui/backend/utils/apiCall'
 import { flash } from '@open-mercato/ui/backend/FlashMessages'
 import { useGuardedMutation } from '@open-mercato/ui/backend/injection/useGuardedMutation'
 import { ProjectColorDot } from './ProjectColorDot'
 import { useActiveTimesheetTimer } from './useActiveTimesheetTimer'
+import { useTimesheetPreference } from './useTimesheetPreference'
+import { resolveSeedProjectId } from './resolveSeedProjectId'
 import { startTimerEntry } from './startTimer'
 import { resolveTimerActionError } from './timerErrors'
+import { createLogger } from '@open-mercato/shared/lib/logger'
+
+const logger = createLogger('staff')
 
 type ProjectOption = {
   id: string
@@ -24,6 +31,8 @@ type TimerBarProps = {
   projects: ProjectOption[]
   staffMemberId: string | null
   onTimerStopped: () => void
+  /** Ids of the projects the member has opted into their grid (`show_in_grid`). */
+  visibleProjectIds?: string[]
 }
 
 const TIMER_MUTATION_CONTEXT_ID = 'staff-timesheets-timer-bar'
@@ -33,7 +42,7 @@ type TimerMutationContext = {
   resourceKind: string
   resourceId: string
   staffMemberId: string | null
-  action: 'timer-create' | 'timer-start' | 'timer-stop'
+  action: 'timer-create' | 'timer-start' | 'timer-stop' | 'timer-notes'
   retryLastMutation: () => Promise<boolean>
 }
 
@@ -52,7 +61,12 @@ function getToday(): string {
   return `${year}-${month}-${day}`
 }
 
-export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarProps) {
+export function TimerBar({
+  projects,
+  staffMemberId,
+  onTimerStopped,
+  visibleProjectIds,
+}: TimerBarProps) {
   const t = useT()
   const { runMutation, retryLastMutation } = useGuardedMutation<TimerMutationContext>({
     contextId: TIMER_MUTATION_CONTEXT_ID,
@@ -61,15 +75,20 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
 
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [description, setDescription] = useState('')
+  const [persistedDescription, setPersistedDescription] = useState('')
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [isStarting, setIsStarting] = useState(false)
   const [isStopping, setIsStopping] = useState(false)
+  const [isSavingDescription, setIsSavingDescription] = useState(false)
   const [showProjectDropdown, setShowProjectDropdown] = useState(false)
   const [projectFilter, setProjectFilter] = useState('')
 
   const dropdownRef = useRef<HTMLDivElement>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const hasSeededRef = useRef(false)
+  const seededForMemberRef = useRef<string | null>(null)
   const activeTimer = useActiveTimesheetTimer({ staffMemberId })
+  const preference = useTimesheetPreference(staffMemberId)
 
   const activeEntryId = activeTimer.entryId
   const activeProjectId = activeTimer.projectId
@@ -79,6 +98,16 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
   const activeProjectName = activeProject?.name ?? activeTimer.projectName
   const activeProjectColor = activeProject?.color ?? activeTimer.projectColor
   const selectedProject = projects.find((p) => p.id === selectedProjectId)
+
+  const startHintId = useId()
+  const startDisabledReason = selectedProjectId
+    ? null
+    : projects.length === 0
+      ? t(
+          'staff.timesheets.my.timer.startDisabledNoProjects',
+          'No projects assigned yet — ask an admin to assign you to one',
+        )
+      : t('staff.timesheets.my.timer.startDisabledNoProject', 'Pick a project to start the timer')
 
   const filteredProjects = projects.filter((p) =>
     p.name.toLowerCase().includes(projectFilter.toLowerCase()),
@@ -106,7 +135,10 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
   useEffect(() => {
     if (activeTimer.running && activeTimer.startedAt) {
       startElapsedCounter(activeTimer.startedAt)
-      if (activeTimer.notes != null) setDescription(activeTimer.notes)
+      if (activeTimer.notes != null) {
+        setDescription(activeTimer.notes)
+        setPersistedDescription(activeTimer.notes)
+      }
       return
     }
     stopElapsedCounter()
@@ -117,6 +149,77 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
       if (intervalRef.current) clearInterval(intervalRef.current)
     }
   }, [])
+
+  // Seed the picker once the inputs it ranks are actually known.
+  //
+  // Both guards matter. Seeding before the active-timer lookup settles would apply
+  // a lower rung and then be overtaken by the running timer, so the picker would
+  // visibly flip or stick on the wrong project — the exact confusion #3750 reports.
+  // And seeding only while the selection is still null means a deliberate pick
+  // always beats a late-arriving fetch.
+  useEffect(() => {
+    if (hasSeededRef.current) return
+    if (!staffMemberId) return
+    if (activeTimer.isLoading || preference.isLoading) return
+    // A failed lookup settles `isLoading` but falls back to an empty timer, so
+    // rung 1 would read `null` and a lower rung would win — then latch. On the
+    // next 30s refetch the running timer reappears, hides the picker, and the
+    // wrong seed only resurfaces after a Stop. An unresolved timer is "not
+    // settled yet", not "nothing running".
+    if (activeTimer.error) return
+    // Same reasoning for the preference: a failed fetch settles with
+    // `lastProjectId: null`, so rung 2 would be skipped and a lower rung would
+    // latch before a retry could correct it. Lower stakes than the timer —
+    // rungs 3 and 4 need exactly one candidate, so the worst case is the same
+    // project or no seed, never a wrong one — but the two guards should agree.
+    if (preference.error) return
+    if (projects.length === 0) return
+    if (selectedProjectId !== null) return
+
+    hasSeededRef.current = true
+    const seeded = resolveSeedProjectId({
+      runningProjectId: activeTimer.projectId,
+      lastProjectId: preference.lastProjectId,
+      visibleProjectIds: visibleProjectIds ?? [],
+      assignedProjectIds: projects.map((p) => p.id),
+    })
+    if (seeded) setSelectedProjectId(seeded)
+  }, [
+    staffMemberId,
+    activeTimer.isLoading,
+    activeTimer.error,
+    activeTimer.projectId,
+    preference.isLoading,
+    preference.error,
+    preference.lastProjectId,
+    projects,
+    selectedProjectId,
+    visibleProjectIds,
+  ])
+
+  // `StaffTeamMember` is organization-scoped, so a different member id means a
+  // different organization. If this component ever survives that switch without
+  // remounting, a latched ref would hold the previous org's project while
+  // `projects` refreshes to the new org's list.
+  //
+  // This covers the *preference* path only. `activeTimesheetTimerQueryKey` is a
+  // bare constant with no member or org in it, so the active-timer query can
+  // still serve the previous org's cached result across such a switch. That is
+  // a pre-existing gap, recorded in the spec as an adjacent issue; the
+  // `assignedProjectIds` guard in `resolveSeedProjectId` keeps it from
+  // producing a cross-org *seed*, so the residue is a stale display.
+  //
+  // Only on an actual member-to-member change: firing on mount would race the
+  // seed effect and clear the selection it had just applied, and treating a
+  // transition to `null` as a switch would discard a deliberate pick.
+  useEffect(() => {
+    const previous = seededForMemberRef.current
+    if (!staffMemberId) return
+    seededForMemberRef.current = staffMemberId
+    if (previous === null || previous === staffMemberId) return
+    hasSeededRef.current = false
+    setSelectedProjectId(null)
+  }, [staffMemberId])
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -160,6 +263,16 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
         mutationPayload: startPayload,
       })
 
+      setPersistedDescription(description)
+
+      // Remember the project on a *successful start* only — not on selection, so an
+      // idle mis-click in the dropdown never becomes tomorrow's default. The timer
+      // is already running at this point, so a failed write must not surface an
+      // error or fail the start; the next successful start corrects the memory.
+      void preference.save(selectedProjectId).catch((prefErr: unknown) => {
+        logger.warn('staff.timesheets.timer.preferenceWriteFailed', { err: prefErr })
+      })
+
       await activeTimer.refresh()
     } catch (err) {
       flash(
@@ -171,11 +284,52 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
     }
   }
 
+  const saveRunningDescription = useCallback(async () => {
+    if (!activeEntryId) return true
+
+    const normalizedDescription = description.trim()
+    const normalizedPersistedDescription = persistedDescription.trim()
+    if (normalizedDescription === normalizedPersistedDescription) return true
+
+    setIsSavingDescription(true)
+    try {
+      const notesPayload = { id: activeEntryId, notes: normalizedDescription || null }
+      await runMutation({
+        operation: () =>
+          apiCallOrThrow('/api/staff/timesheets/time-entries', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(notesPayload),
+          }),
+        context: {
+          formId: TIMER_MUTATION_CONTEXT_ID,
+          resourceKind: 'staff.timesheets.time_entry',
+          resourceId: activeEntryId,
+          staffMemberId,
+          action: 'timer-notes',
+          retryLastMutation,
+        },
+        mutationPayload: notesPayload,
+      })
+      setPersistedDescription(normalizedDescription)
+      return true
+    } catch (err) {
+      flash(
+        resolveTimerActionError(err, t('staff.timesheets.my.errors.save', 'Failed to save timesheets.')),
+        'error',
+      )
+      return false
+    } finally {
+      setIsSavingDescription(false)
+    }
+  }, [activeEntryId, description, persistedDescription, runMutation, staffMemberId, retryLastMutation, t])
+
   const handleStop = async () => {
     if (!activeEntryId) return
 
     setIsStopping(true)
     try {
+      await saveRunningDescription()
       const stopPayload = {
         id: activeEntryId,
         action: 'timer-stop',
@@ -198,7 +352,7 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
         mutationPayload: stopPayload,
       })
 
-      setDescription('')
+      setPersistedDescription(description.trim())
       await activeTimer.refresh()
       onTimerStopped()
     } catch (err) {
@@ -217,7 +371,18 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
         type="text"
         value={description}
         onChange={(e) => setDescription(e.target.value)}
-        readOnly={isRunning}
+        disabled={isSavingDescription}
+        onBlur={() => {
+          if (isRunning) {
+            void saveRunningDescription()
+          }
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && isRunning) {
+            event.preventDefault()
+            void saveRunningDescription()
+          }
+        }}
         placeholder={t(
           'staff.timesheets.my.timer.placeholder',
           'What are you working on?',
@@ -238,6 +403,11 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
             <Button
               type="button"
               variant="outline"
+              // h-8, matching the Start/Stop `IconButton size="default"` (size-8)
+              // beside it. `Button` and `IconButton` do NOT share a size scale:
+              // IconButton `default` is 32px and `lg` is 36px, so `Button
+              // size="default"` (36px) would break the row, not fix it.
+              // See `.ai/ui-components.md` § primitive pairing.
               size="sm"
               onClick={() => {
                 setShowProjectDropdown(!showProjectDropdown)
@@ -251,19 +421,19 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
             </Button>
 
             {showProjectDropdown && (
-              <div className="absolute right-0 top-full mt-1 z-50 min-w-[200px] rounded-md border bg-popover p-1 shadow-md">
-                <input
-                  type="text"
+              <div className="absolute right-0 top-full mt-1 z-dropdown min-w-52 rounded-md border bg-popover p-1 shadow-lg">
+                <SearchInput
+                  size="sm"
                   value={projectFilter}
-                  onChange={(e) => setProjectFilter(e.target.value)}
+                  onChange={setProjectFilter}
                   placeholder={t(
                     'staff.timesheets.my.timer.searchProject',
                     'Search projects...',
                   )}
-                  className="w-full bg-transparent border-b px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground mb-1"
+                  className="mb-1"
                   autoFocus
                 />
-                <div className="max-h-[200px] overflow-y-auto">
+                <div className="max-h-52 overflow-y-auto">
                   {filteredProjects.length === 0 ? (
                     <div className="px-2 py-1.5 text-xs text-muted-foreground">
                       {t(
@@ -302,7 +472,7 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
         )}
       </div>
 
-      <span className="font-mono text-sm tabular-nums min-w-[64px] text-right">
+      <span className="font-mono text-sm tabular-nums min-w-16 text-right">
         {formatElapsed(elapsedSeconds)}
       </span>
 
@@ -318,16 +488,28 @@ export function TimerBar({ projects, staffMemberId, onTimerStopped }: TimerBarPr
           <Square className="size-4" />
         </IconButton>
       ) : (
-        <IconButton
-          type="button"
-          variant="primary"
-          size="default"
-          onClick={handleStart}
-          disabled={isStarting || !selectedProjectId}
-          aria-label={t('staff.timesheets.my.timer.start', 'Start timer')}
-        >
-          <Play className="size-4" />
-        </IconButton>
+        <>
+          <SimpleTooltip content={startDisabledReason} side="top">
+            <span className="inline-flex" tabIndex={startDisabledReason ? 0 : undefined}>
+              <IconButton
+                type="button"
+                variant="primary"
+                size="default"
+                onClick={handleStart}
+                disabled={isStarting || !selectedProjectId}
+                aria-label={t('staff.timesheets.my.timer.start', 'Start timer')}
+                aria-describedby={startDisabledReason ? startHintId : undefined}
+              >
+                <Play className="size-4" />
+              </IconButton>
+            </span>
+          </SimpleTooltip>
+          {startDisabledReason ? (
+            <span id={startHintId} className="sr-only">
+              {startDisabledReason}
+            </span>
+          ) : null}
+        </>
       )}
     </div>
   )
