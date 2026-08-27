@@ -85,6 +85,9 @@ Call sites:
 | `startTimerCommand.undo` | After `entry.deletedAt = now`, cascade with the same `now` |
 | `deleteTimeEntryCommand.execute` | After `entry.deletedAt = now`, cascade with the same `now`; record `now` in the undo payload |
 | `deleteTimeEntryCommand.undo` | After restoring the entry, restore segments at the recorded instant (no-op when absent) |
+| `createTimeEntryCommand.undo` | After `entry.deletedAt = now`, cascade with the same `now` (added in review) |
+| `createTimeEntryCommand.redo` | `beforeRestore` restores segments keyed on the still-soft-deleted row's own `deletedAt` (added in review) |
+| `bulk/route.ts` grid save, duration zeroed | After `existing.deletedAt = now`, cascade with the same `now` inside the route's existing transaction (added in review) |
 
 `startTimerCommand.undo` needs no payload change: it deletes the entry outright, so cascading every live segment of that entry is unambiguous.
 
@@ -145,11 +148,11 @@ Unchanged. No route, request, or response shape is touched — `DELETE /api/staf
 | Cascade widens a transaction and increases lock time | Low | Timer throughput | Scoped single-table update by indexed `time_entry_id` | Low |
 | Migration on a large table | Medium | Deploy | Single indexed UPDATE; row count knowable in advance via the same predicate | Low, but measure before applying |
 
-**Blast radius:** one module, one new file, three call sites, one data migration. **Rollback:** revert the code; the backfill is not reversed by a revert, but it only marks rows whose parent is already deleted, so leaving it applied is safe.
+**Blast radius:** one module, one new file, six call sites across two files, one data migration. **Rollback:** revert the code; the backfill is not reversed by a revert, but it only marks rows whose parent is already deleted, so leaving it applied is safe.
 
 ## 📋 Phasing
 
-- **Phase 1 — cascade + tests.** Helper, three call sites, unit + integration coverage. Independently shippable; fixes all new orphans.
+- **Phase 1 — cascade + tests.** Helper, six call sites, unit + integration coverage. Independently shippable; fixes all new orphans.
 - **Phase 2 — backfill.** The data migration for rows already orphaned. Separately reviewable and separately appliable.
 
 ## 📋 Implementation Plan
@@ -161,7 +164,10 @@ Unchanged. No route, request, or response shape is touched — `DELETE /api/staf
 3. Call the helper from `startTimerCommand.undo` using the same `Date` instance that stamps the entry. Test: undo a start → entry soft-deleted **and** segment soft-deleted with `ended_at` set.
 4. Add the optional `segmentsDeletedAt` to `TimeEntryUndoPayload`; have `deleteTimeEntryCommand.execute` cascade and record the instant. Test: delete → all live segments soft-deleted at the same instant.
 5. Restore in `deleteTimeEntryCommand.undo`, keyed on the recorded instant; no-op when the field is absent. Tests: full round-trip restores exactly the cascaded set; a legacy payload restores nothing; an individually-deleted segment stays deleted.
-6. Integration spec under `packages/core/src/modules/staff/__integration__/` covering start-timer → undo → assert no live orphan, and delete → undo → assert the segment set round-trips. Self-contained fixtures, cleaned up in teardown, per `.ai/qa/AGENTS.md`.
+6. Integration specs under `packages/core/src/modules/staff/__integration__/`, self-contained with fixtures cleaned up in teardown per `.ai/qa/AGENTS.md`, covering every affected API path:
+   - `TC-STAFF-041` — `POST .../time-entries/start-timer` → undo → assert no live orphan and nothing left running.
+   - `TC-STAFF-042` — `DELETE .../time-entries` → undo → assert the segment set round-trips, and that a payload without `segmentsDeletedAt` restores none.
+   - `TC-STAFF-043` — `POST .../time-entries/bulk` with `durationMinutes: 0` → assert the cascade, that a non-zero save does NOT cascade, and that a foreign-tenant entry is rejected with its segments untouched.
 
 **Phase 2**
 
@@ -199,4 +205,5 @@ Basing here also means the two newer commands are present and visible while impl
 | 2026-08-26 | Initial spec. Scope, cascade mechanism and backfill decided. |
 | 2026-08-26 | Landing sequence resolved: fork `develop` synced to `upstream/develop`; this branch bases on `feat/timesheets-ux-improvements`. |
 | 2026-08-26 | Implemented. Phase 1 (cascade helper, three call sites, unit + integration coverage) and Phase 2 (backfill migration) landed. Two deviations from the plan, both recorded in the PR: the per-segment `DELETE` route the integration spec was to use does not exist (segments expose `POST`/`PATCH` only), so TC-STAFF-042 writes that precondition directly to the database; and the backfill is hand-written with the ORM snapshot unchanged, because a data-only migration moves no entity definition. |
+| 2026-08-27 | Review found two further defects, both fixed in the same PR. `bulk/route.ts` zeroes a grid cell to soft-delete an entry and did not cascade — a fourth call site, now covered by `TC-STAFF-043`. The backfill preferred the entry's `ended_at` over the delete instant, diverging from the runtime cascade; because `start_timer_existing` restarts an entry without clearing `ended_at`, that could write `ended_at < started_at`. Verified against that exact scenario in a rolled-back transaction: the corrected two-term coalesce yields the delete instant, the original would have produced a negative duration. |
 | 2026-08-27 | Scope widened during review: `createTimeEntryCommand.undo` was a third instance of the same defect and is now fixed in the same PR. It needed more than the helper call — the command's `makeCreateRedo` is segment-unaware, so `beforeRestore` restores the cascaded segments keyed on the still-soft-deleted row's own `deletedAt`, keeping undo and redo symmetric without a payload field. |
