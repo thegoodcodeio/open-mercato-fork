@@ -142,6 +142,16 @@ function undoLogEntry(undoState: Record<string, unknown>) {
   return { commandPayload: { undo: { before: undoState } } }
 }
 
+/**
+ * The undo state as a start written before `execute` began clearing `endedAt`
+ * would have recorded it — the field is absent entirely, not null.
+ */
+function legacyUndoStateWithoutEnd(undoState: Record<string, unknown>) {
+  const legacyState = { ...undoState }
+  delete legacyState.endedAt
+  return legacyState
+}
+
 const RUNNING_FILTER_FIELD_BY_COLUMN: Record<string, 'startedAt' | 'endedAt'> = {
   started_at: 'startedAt',
   ended_at: 'endedAt',
@@ -156,6 +166,9 @@ const RUNNING_FILTER_FIELD_BY_COLUMN: Record<string, 'startedAt' | 'endedAt'> = 
 function matchesRunningFilter(entry: { startedAt: unknown; endedAt: unknown }) {
   return Object.entries(buildTimeEntryListFilters({ running: 'true' })).every(([column, condition]) => {
     const field = RUNNING_FILTER_FIELD_BY_COLUMN[column]
+    // Without this the helper would silently score an unknown column as "absent",
+    // which is exactly the drift it exists to catch.
+    if (!field) throw new Error(`[internal] unmapped running-timer filter column: ${column}`)
     const value = entry[field]
     return (condition as { $exists: boolean }).$exists ? value != null : value == null
   })
@@ -432,5 +445,46 @@ describe('start_timer_existing command — an entry that already carried an end'
     expect(entry.startedAt).toBeNull()
     expect(entry.source).toBe('manual')
     expect((entry.endedAt as Date).toISOString()).toBe(PREVIOUS_END.toISOString())
+  })
+
+  // An action log written before `execute` cleared `endedAt` carries no `endedAt`
+  // in its undo state. The restore reads that as null, which is only safe because
+  // the undo guard refuses whenever the row still carries an end — the two cases
+  // below pin both halves of that argument.
+  it('refuses a legacy log whose start left the end in place, so the restore is never reached', async () => {
+    const command = await loadStartTimerExistingCommand()
+    const entry = installEntryEndedBeforeStart()
+
+    const { undoState } = await command.execute(startInput(), createCtx(makeEm()))
+    // A pre-fix start set startedAt and left the end untouched; recreate that row.
+    entry.endedAt = PREVIOUS_END
+
+    await expect(
+      command.undo!({
+        input: startInput(),
+        ctx: createCtx(makeEm()),
+        logEntry: undoLogEntry(legacyUndoStateWithoutEnd(undoState)),
+      }),
+    ).rejects.toMatchObject({ status: 409 })
+
+    expect(entry.startedAt).toBeInstanceOf(Date)
+    expect((entry.endedAt as Date).toISOString()).toBe(PREVIOUS_END.toISOString())
+  })
+
+  it('leaves the end null when a legacy log does reach the restore', async () => {
+    const command = await loadStartTimerExistingCommand()
+    const entry = installEntryEndedBeforeStart()
+
+    const { undoState } = await command.execute(startInput(), createCtx(makeEm()))
+
+    await command.undo!({
+      input: startInput(),
+      ctx: createCtx(makeEm()),
+      logEntry: undoLogEntry(legacyUndoStateWithoutEnd(undoState)),
+    })
+
+    expect(entry.startedAt).toBeNull()
+    expect(entry.source).toBe('manual')
+    expect(entry.endedAt).toBeNull()
   })
 })
