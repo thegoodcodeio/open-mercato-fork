@@ -1226,6 +1226,15 @@ const updateTimeEntryCommand: CommandHandler<StaffTimeEntryUpdateInput, { timeEn
   },
 }
 
+/**
+ * Deliberately has no `redo`, unlike `createTimeEntryCommand`. A create needs one
+ * because replaying `execute` would mint a new id; a soft-delete keyed on an id the
+ * redo input already carries is idempotent, so the command bus's fallback —
+ * `execute(commandPayload.__redoInput)` for any handler without a `redo` — is the
+ * correct replay. That path still runs `prepare` and `buildLog`, so the redo writes
+ * its own action log — fresh undo token, undo payload rebuilt from the state the
+ * replay actually produced — and the next undo reads that log, not the original.
+ */
 const deleteTimeEntryCommand: CommandHandler<{ id?: string }, { timeEntryId: string; segmentsDeletedAt: string }> = {
   id: 'staff.timesheets.time_entries.delete',
   async prepare(input, ctx) {
