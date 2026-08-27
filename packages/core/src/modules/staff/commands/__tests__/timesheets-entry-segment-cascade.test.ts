@@ -42,6 +42,7 @@ const TENANT_ID = '11111111-1111-4111-8111-111111111111'
 const ORG_ID = '22222222-2222-4222-8222-222222222222'
 const STAFF_MEMBER_ID = '33333333-3333-4333-8333-333333333333'
 const USER_ID = '44444444-4444-4444-8444-444444444444'
+const OTHER_ORG_ID = '88888888-8888-4888-8888-888888888888'
 const ENTRY_ID = '55555555-5555-4555-8555-555555555555'
 
 type SegmentRow = {
@@ -176,7 +177,17 @@ function installWorld(entry: EntryRow | null, segments: SegmentRow[]) {
 function makeCtx(entry: EntryRow | null) {
   const em = {
     fork: jest.fn(),
-    findOne: jest.fn(async () => entry),
+    // Honours the where clause rather than returning the row unconditionally, so a
+    // lookup that dropped its tenant/organization predicate fails these tests instead
+    // of passing silently.
+    findOne: jest.fn(async (_cls: unknown, where: Record<string, unknown> = {}) => {
+      if (!entry) return null
+      const matches = Object.entries(where).every(([field, expected]) => {
+        if (expected === null) return (entry as unknown as Record<string, unknown>)[field] === null
+        return (entry as unknown as Record<string, unknown>)[field] === expected
+      })
+      return matches ? entry : null
+    }),
     create: jest.fn((_cls: unknown, data: Record<string, unknown>) => data),
     persist: jest.fn(),
     flush: jest.fn(async () => undefined),
@@ -363,5 +374,30 @@ describe('create undo/redo', () => {
     expect(cascaded.deletedAt).toBeNull()
     expect(cascaded.endedAt).toBeNull()
     expect(individually.deletedAt).toBe(individuallyDeletedAt)
+  })
+})
+
+describe('create redo scope isolation', () => {
+  /**
+   * The segments are in the caller's own scope, so the segment query alone cannot
+   * reject this — only the entry lookup's tenant/organization filter can. Drop either
+   * predicate from `beforeRestore` and the foreign row's `deletedAt` is read and the
+   * segments come back, failing this test. That makes the assertion falsifiable, which
+   * the segment-scoped variant was not.
+   */
+  it('will not read a soft-deleted entry that belongs to another organization', async () => {
+    const { createEntry } = await loadCommands()
+    const cascadeInstant = new Date('2026-08-26T16:42:11.000Z')
+    const foreignEntry = makeEntry({ source: 'manual', organizationId: OTHER_ORG_ID, deletedAt: cascadeInstant })
+    const inScopeSegment = makeSegment({ id: 'seg-a', deletedAt: cascadeInstant, endedAt: cascadeInstant })
+    installWorld(foreignEntry, [inScopeSegment])
+    const { ctx } = makeCtx(foreignEntry)
+
+    const snapshot = snapshotOf(makeEntry({ source: 'manual' }))
+
+    await createEntry.redo({ input: {}, ctx, logEntry: { payload: { undo: { after: snapshot } } } })
+
+    expect(inScopeSegment.deletedAt).toBe(cascadeInstant)
+    expect(inScopeSegment.endedAt).toBe(cascadeInstant)
   })
 })

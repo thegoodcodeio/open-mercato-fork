@@ -56,6 +56,13 @@ export async function softDeleteSegmentsForEntry(
  * by the shared `deletedAt` instant recorded in the undo payload. A segment closed
  * by the cascade (`endedAt === deletedAt`) is re-opened; one that was already closed
  * before the cascade keeps its own `endedAt`.
+ *
+ * Re-opening infers "the cascade closed this" from `endedAt === deletedAt`, so a
+ * segment legitimately closed in the very same millisecond as the delete would be
+ * re-opened too. Two HTTP requests landing on the same millisecond makes that
+ * vanishingly unlikely, and the `deletedAt` half of the key is unaffected; recording
+ * the closed ids in the undo payload is the exact-rather-than-probabilistic fix if it
+ * ever matters.
  */
 export async function restoreSegmentsForEntry(
   em: EntityManager,

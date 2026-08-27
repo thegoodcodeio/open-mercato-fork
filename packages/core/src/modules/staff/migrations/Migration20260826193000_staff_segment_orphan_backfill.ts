@@ -11,6 +11,13 @@ import { Migration } from '@mikro-orm/migrations';
  * deliberately does not collide with the recorded-instant restore path, since no
  * action log written before the fix carries `segmentsDeletedAt`.
  *
+ * An open segment is closed at the parent's `deleted_at`, matching exactly what the
+ * runtime cascade does. The entry's own `ended_at` is deliberately NOT consulted:
+ * `start_timer_existing` restarts an entry without clearing `ended_at`, so a restarted
+ * entry can carry an end that predates its newest segment's `started_at` — adopting it
+ * would write a negative-duration row that this migration's no-op `down()` could never
+ * take back.
+ *
  * Size the affected rows before applying:
  *
  *   select count(*) from staff_time_entry_segments s
@@ -22,7 +29,7 @@ export class Migration20260826193000_staff_segment_orphan_backfill extends Migra
   override async up(): Promise<void> {
     this.addSql(`update "staff_time_entry_segments" s
       set "deleted_at" = e."deleted_at",
-          "ended_at"   = coalesce(s."ended_at", e."ended_at", e."deleted_at"),
+          "ended_at"   = coalesce(s."ended_at", e."deleted_at"),
           "updated_at" = now()
       from "staff_time_entries" e
       where s."time_entry_id" = e."id"
