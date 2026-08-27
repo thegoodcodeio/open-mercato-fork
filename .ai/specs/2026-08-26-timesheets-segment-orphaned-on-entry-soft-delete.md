@@ -198,3 +198,4 @@ Basing here also means the two newer commands are present and visible while impl
 |---|---|
 | 2026-08-26 | Initial spec. Scope, cascade mechanism and backfill decided. |
 | 2026-08-26 | Landing sequence resolved: fork `develop` synced to `upstream/develop`; this branch bases on `feat/timesheets-ux-improvements`. |
+| 2026-08-26 | Implemented. Phase 1 (cascade helper, three call sites, unit + integration coverage) and Phase 2 (backfill migration) landed. Two deviations from the plan, both recorded in the PR: the per-segment `DELETE` route the integration spec was to use does not exist (segments expose `POST`/`PATCH` only), so TC-STAFF-042 writes that precondition directly to the database; and the backfill is hand-written with the ORM snapshot unchanged, because a data-only migration moves no entity definition. |
