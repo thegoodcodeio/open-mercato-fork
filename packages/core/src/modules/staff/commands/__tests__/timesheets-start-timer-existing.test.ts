@@ -17,6 +17,7 @@
 // the route no longer touches the ORM, so they belong here now.
 import type { AwilixContainer } from 'awilix'
 import { LockMode } from '@mikro-orm/core'
+import { buildTimeEntryListFilters } from '../../lib/timesheets/timeEntryListFilters'
 
 const mockFindOneWithDecryption = jest.fn()
 const mockFindWithDecryption = jest.fn()
@@ -135,6 +136,29 @@ function startInput() {
 
 function lockWasRequested() {
   return findOneOptions.some((opt) => opt && opt.lockMode === LockMode.PESSIMISTIC_WRITE)
+}
+
+function undoLogEntry(undoState: Record<string, unknown>) {
+  return { commandPayload: { undo: { before: undoState } } }
+}
+
+const RUNNING_FILTER_FIELD_BY_COLUMN: Record<string, 'startedAt' | 'endedAt'> = {
+  started_at: 'startedAt',
+  ended_at: 'endedAt',
+}
+
+/**
+ * Evaluates the time-entries list route's own `?running=true` filter against a row,
+ * so "the user can still see the timer they just started" is asserted through
+ * `buildTimeEntryListFilters` instead of a hand-copied predicate that could drift
+ * away from it.
+ */
+function matchesRunningFilter(entry: { startedAt: unknown; endedAt: unknown }) {
+  return Object.entries(buildTimeEntryListFilters({ running: 'true' })).every(([column, condition]) => {
+    const field = RUNNING_FILTER_FIELD_BY_COLUMN[column]
+    const value = entry[field]
+    return (condition as { $exists: boolean }).$exists ? value != null : value == null
+  })
 }
 
 // The single-active-timer guard (#2855) is the only lookup that queries with
@@ -285,10 +309,6 @@ describe('start_timer_existing command — audit log metadata', () => {
 })
 
 describe('start_timer_existing command — undo', () => {
-  function undoLogEntry(undoState: Record<string, unknown>) {
-    return { commandPayload: { undo: { before: undoState } } }
-  }
-
   async function captureUndoState() {
     const command = await loadStartTimerExistingCommand()
     const result = await command.execute(startInput(), createCtx(makeEm()))
@@ -354,5 +374,63 @@ describe('start_timer_existing command — undo', () => {
     await command.undo!({ input: startInput(), ctx: createCtx(em), logEntry: {} })
 
     expect(em.transactional).not.toHaveBeenCalled()
+  })
+})
+
+// An entry can already carry an `ended_at` when its timer is started: a manual
+// entry recording a finished stretch of work has one, and starting it is what the
+// timer-start endpoint is for. The start opens a NEW work segment, so that end
+// describes work that finished before the segment now running.
+describe('start_timer_existing command — an entry that already carried an end', () => {
+  const PREVIOUS_END = new Date('2026-01-01T07:30:00.000Z')
+
+  function installEntryEndedBeforeStart() {
+    const entry = makeEntry({ endedAt: PREVIOUS_END })
+    mockFindOneWithDecryption.mockImplementation(async (_em, _cls, where, opts) => {
+      findOneOptions.push(opts as Record<string, unknown> | undefined)
+      const filter = where as Record<string, unknown>
+      if (isSiblingRunningTimerQuery(filter)) return null
+      if (filter.id === SEGMENT_ID) return { id: SEGMENT_ID, timeEntryId: ENTRY_ID, deletedAt: null }
+      return entry
+    })
+    return entry
+  }
+
+  it('clears the stale end so the started entry matches the running-timer lookup', async () => {
+    const command = await loadStartTimerExistingCommand()
+    const entry = installEntryEndedBeforeStart()
+
+    await command.execute(startInput(), createCtx(makeEm()))
+
+    expect(entry.startedAt).toBeInstanceOf(Date)
+    expect(entry.endedAt).toBeNull()
+    // Asserted through the list route's own definition of "running" rather than a
+    // restatement of it, so the two cannot drift apart silently.
+    expect(matchesRunningFilter(entry)).toBe(true)
+  })
+
+  it('never leaves the row with an end that predates its start', async () => {
+    const command = await loadStartTimerExistingCommand()
+    const entry = installEntryEndedBeforeStart()
+
+    await command.execute(startInput(), createCtx(makeEm()))
+
+    const startedAtMs = (entry.startedAt as Date).getTime()
+    expect(entry.endedAt === null || (entry.endedAt as Date).getTime() >= startedAtMs).toBe(true)
+  })
+
+  it('can still be undone, and gives the entry its previous end back', async () => {
+    const command = await loadStartTimerExistingCommand()
+    const entry = installEntryEndedBeforeStart()
+
+    // The same row object carries the state `execute` wrote into `undo`, so the
+    // undo runs against the real post-start shape instead of a hand-built one.
+    const { undoState } = await command.execute(startInput(), createCtx(makeEm()))
+
+    await command.undo!({ input: startInput(), ctx: createCtx(makeEm()), logEntry: undoLogEntry(undoState) })
+
+    expect(entry.startedAt).toBeNull()
+    expect(entry.source).toBe('manual')
+    expect((entry.endedAt as Date).toISOString()).toBe(PREVIOUS_END.toISOString())
   })
 })
