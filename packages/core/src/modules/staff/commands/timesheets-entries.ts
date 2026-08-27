@@ -386,9 +386,9 @@ const createTimeEntryCommand: CommandHandler<StaffTimeEntryCreateInput, { timeEn
     // the instant `undo` cascaded on — no payload field needed to carry it. Mutations
     // here share the redo's EntityManager and flush with the row restore.
     beforeRestore: async ({ em, snapshot }) => {
-      // Deliberately not `scopedStaffSnapshotWhere`: that helper appends
-      // `deletedAt: null`, which would miss the very row this needs — the one undo
-      // soft-deleted. Scope is therefore spelled out, and still filtered on both keys.
+      // Scope is spelled out rather than taken from `scopedStaffSnapshotWhere` so both
+      // keys are always applied: that helper omits `tenantId` or `organizationId`
+      // whenever the snapshot's value is falsy, which would silently widen this lookup.
       const softDeleted = await em.findOne(StaffTimeEntry, {
         id: snapshot.id,
         tenantId: snapshot.tenantId,
@@ -1211,6 +1211,9 @@ const updateTimeEntryCommand: CommandHandler<StaffTimeEntryUpdateInput, { timeEn
     entry.dealId = before.dealId ?? null
     entry.orderId = before.orderId ?? null
     entry.notes = before.notes ?? null
+    // Always resolves to null, so this is not a seventh uncascaded soft-delete site:
+    // `execute` only ever resolves entries with `deletedAt: null`, so a log written by
+    // this command can never carry a non-null `before.deletedAt` to restore.
     entry.deletedAt = before.deletedAt ? new Date(before.deletedAt) : null
     entry.updatedAt = new Date()
     await em.flush()

@@ -12,11 +12,17 @@ import { Migration } from '@mikro-orm/migrations';
  * action log written before the fix carries `segmentsDeletedAt`.
  *
  * An open segment is closed at the parent's `deleted_at`, matching exactly what the
- * runtime cascade does. The entry's own `ended_at` is deliberately NOT consulted:
- * `start_timer_existing` restarts an entry without clearing `ended_at`, so a restarted
- * entry can carry an end that predates its newest segment's `started_at` — adopting it
- * would write a negative-duration row that this migration's no-op `down()` could never
- * take back.
+ * runtime cascade does. The entry's own `ended_at` is deliberately NOT consulted,
+ * because an entry can carry an end that predates its newest segment's `started_at`:
+ * `staffTimeEntryCreateSchema` accepts `startedAt` and `endedAt` independently, so a
+ * manual create can record an end with no start, and a later `POST .../timer-start`
+ * gives that entry a `startedAt` and a fresh segment while leaving the stale `ended_at`
+ * in place. Adopting it for such a row would write a negative-duration segment that
+ * this migration's no-op `down()` could never take back.
+ *
+ * (`start_timer_existing` cannot produce the same shape by restarting a stopped entry:
+ * it re-reads the row under `LockMode.PESSIMISTIC_WRITE` and rejects any entry that
+ * already has a `started_at` with 409 `timerAlreadyStarted`.)
  *
  * Size the affected rows before applying:
  *

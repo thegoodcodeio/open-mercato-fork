@@ -110,7 +110,7 @@ One data migration in `packages/core/src/modules/staff/migrations/`:
 ```sql
 UPDATE staff_time_entry_segments s
 SET deleted_at = e.deleted_at,
-    ended_at   = COALESCE(s.ended_at, e.ended_at, e.deleted_at),
+    ended_at   = COALESCE(s.ended_at, e.deleted_at),
     updated_at = now()
 FROM staff_time_entries e
 WHERE s.time_entry_id = e.id
@@ -119,6 +119,8 @@ WHERE s.time_entry_id = e.id
 ```
 
 Adopting the parent's `deleted_at` (rather than `now()`) keeps the timestamps coherent, and deliberately does **not** collide with the recorded-instant restore path, since no pre-existing log carries `segmentsDeletedAt`.
+
+The coalesce has **two** terms, not three: the entry's own `ended_at` is deliberately not consulted. An entry can carry an `ended_at` that predates its newest segment's `started_at` — `staffTimeEntryCreateSchema` accepts `startedAt` and `endedAt` as independent optional fields, so a manual create can record an end with no start, and `POST .../timer-start` then gives that entry a `startedAt` and a fresh segment while leaving the stale `ended_at` untouched. Adopting the entry's end for such a row would write `ended_at < started_at`, a negative-duration segment that this migration's no-op `down()` can never take back. The two-term form reproduces the runtime cascade rule (`if (!segment.endedAt) segment.endedAt = deletedAt`) exactly, which is the property that matters: the repair rule and the write rule must not diverge.
 
 Per `AGENTS.md`, the migration ships in the PR; **applying it locally is the maintainer's call and this spec does not run `yarn db:migrate`.**
 
@@ -136,7 +138,7 @@ Unchanged. No route, request, or response shape is touched — `DELETE /api/staf
 | Segment individually deleted, then the entry deleted, then undone | Individually-deleted segment keeps its own timestamp, so restore skips it — it stays deleted, as the user intended |
 | Cascade fails mid-transaction | Helper does not flush; the caller's transaction rolls back entry and segments together |
 | Concurrent segment write during cascade | Serialized by the caller's existing transaction/lock; a segment created after the cascade is a new orphan only if the entry delete already committed — covered by the `delete` command running both in one transaction |
-| Open orphan closed by the backfill | `ended_at` set from the parent; the row is soft-deleted so no duration total changes |
+| Open orphan closed by the backfill | `ended_at` set to the parent's **`deleted_at`** — never the parent's `ended_at`, which can predate the segment's own `started_at`; the row is soft-deleted so no duration total changes |
 
 ## 📝 Risks & Impact Review
 
@@ -205,5 +207,6 @@ Basing here also means the two newer commands are present and visible while impl
 | 2026-08-26 | Initial spec. Scope, cascade mechanism and backfill decided. |
 | 2026-08-26 | Landing sequence resolved: fork `develop` synced to `upstream/develop`; this branch bases on `feat/timesheets-ux-improvements`. |
 | 2026-08-26 | Implemented. Phase 1 (cascade helper, three call sites, unit + integration coverage) and Phase 2 (backfill migration) landed. Two deviations from the plan, both recorded in the PR: the per-segment `DELETE` route the integration spec was to use does not exist (segments expose `POST`/`PATCH` only), so TC-STAFF-042 writes that precondition directly to the database; and the backfill is hand-written with the ORM snapshot unchanged, because a data-only migration moves no entity definition. |
-| 2026-08-27 | Review found two further defects, both fixed in the same PR. `bulk/route.ts` zeroes a grid cell to soft-delete an entry and did not cascade — a fourth call site, now covered by `TC-STAFF-043`. The backfill preferred the entry's `ended_at` over the delete instant, diverging from the runtime cascade; because `start_timer_existing` restarts an entry without clearing `ended_at`, that could write `ended_at < started_at`. Verified against that exact scenario in a rolled-back transaction: the corrected two-term coalesce yields the delete instant, the original would have produced a negative duration. |
+| 2026-08-27 | Review found two further defects, both fixed in the same PR. `bulk/route.ts` zeroes a grid cell to soft-delete an entry and did not cascade — a fourth call site, now covered by `TC-STAFF-043`. The backfill preferred the entry's `ended_at` over the delete instant, diverging from the runtime cascade, which could write `ended_at < started_at`. Verified against that exact scenario in a rolled-back transaction: the corrected two-term coalesce yields the delete instant, the original would have produced a negative duration. |
 | 2026-08-27 | Scope widened during review: `createTimeEntryCommand.undo` was a third instance of the same defect and is now fixed in the same PR. It needed more than the helper call — the command's `makeCreateRedo` is segment-unaware, so `beforeRestore` restores the cascaded segments keyed on the still-soft-deleted row's own `deletedAt`, keeping undo and redo symmetric without a payload field. |
+| 2026-08-27 | Re-review corrected the written record, no runtime change. This spec's migration section still prescribed the three-term `COALESCE(s.ended_at, e.ended_at, e.deleted_at)` that the previous round had removed from the shipped migration as a defect — the normative SQL, the "open orphan closed by the backfill" edge case, and the changelog entry above are now aligned with the two-term form that actually ships. The mechanism recorded for that defect was also wrong in both the spec and the migration docblock: `start_timer_existing` cannot restart a stopped entry (it rejects one under `LockMode.PESSIMISTIC_WRITE` with 409 `timerAlreadyStarted`). The reachable shape is a manual create that records `endedAt` with `startedAt` still null — the validator accepts the two independently — followed by `POST .../timer-start`. |
