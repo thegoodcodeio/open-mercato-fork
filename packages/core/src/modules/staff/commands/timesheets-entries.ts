@@ -352,7 +352,18 @@ const createTimeEntryCommand: CommandHandler<StaffTimeEntryCreateInput, { timeEn
     const em = (ctx.container.resolve('em') as EntityManager).fork()
     const entry = await em.findOne(StaffTimeEntry, scopedStaffSnapshotWhere(after.id, staffSnapshotScopeFromSnapshot(after)))
     if (entry) {
-      entry.deletedAt = new Date()
+      // An entry created manually can still accrue segments afterwards — the
+      // segments API adds them, and `start_timer_existing` opens one. Undoing the
+      // create must take them with it, on the same instant so `redo` can reverse
+      // exactly this set.
+      const deletedAt = new Date()
+      entry.deletedAt = deletedAt
+      await softDeleteSegmentsForEntry(
+        em,
+        entry.id,
+        { tenantId: entry.tenantId, organizationId: entry.organizationId },
+        deletedAt,
+      )
       await em.flush()
 
       await emitCrudUndoSideEffects({
@@ -371,6 +382,23 @@ const createTimeEntryCommand: CommandHandler<StaffTimeEntryCreateInput, { timeEn
     buildResult: (entity) => ({ timeEntryId: entity.id }),
     events: staffTimeEntryCrudEvents,
     indexer: timeEntryCrudIndexer,
+    // Runs while the row is still soft-deleted, so the entry's own `deletedAt` is
+    // the instant `undo` cascaded on — no payload field needed to carry it. Mutations
+    // here share the redo's EntityManager and flush with the row restore.
+    beforeRestore: async ({ em, snapshot }) => {
+      const softDeleted = await em.findOne(StaffTimeEntry, {
+        id: snapshot.id,
+        tenantId: snapshot.tenantId,
+        organizationId: snapshot.organizationId,
+      } as never)
+      if (!softDeleted?.deletedAt) return
+      await restoreSegmentsForEntry(
+        em,
+        snapshot.id,
+        { tenantId: snapshot.tenantId, organizationId: snapshot.organizationId },
+        softDeleted.deletedAt,
+      )
+    },
   }),
 }
 

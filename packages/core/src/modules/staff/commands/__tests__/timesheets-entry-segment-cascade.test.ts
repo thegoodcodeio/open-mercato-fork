@@ -74,6 +74,10 @@ type EntryRow = {
 }
 
 type LoadedCommands = {
+  createEntry: {
+    undo: (params: { logEntry: unknown; ctx: unknown }) => Promise<void>
+    redo: (params: { input: unknown; logEntry: unknown; ctx: unknown }) => Promise<unknown>
+  }
   startTimer: {
     undo: (params: { logEntry: unknown; ctx: unknown }) => Promise<void>
   }
@@ -90,6 +94,7 @@ async function loadCommands(): Promise<LoadedCommands> {
   commandRegistry.clear()
   await import('../timesheets-entries')
   return {
+    createEntry: commandRegistry.get('staff.timesheets.time_entries.create') as never,
     startTimer: commandRegistry.get('staff.timesheets.time_entries.start_timer') as never,
     deleteEntry: commandRegistry.get('staff.timesheets.time_entries.delete') as never,
   }
@@ -319,5 +324,44 @@ describe('time_entries.delete undo', () => {
     expect(entry.deletedAt).toBeNull()
     expect(untouched.deletedAt).toBeNull()
     expect(mockFindWithDecryption).not.toHaveBeenCalled()
+  })
+})
+
+describe('create undo/redo', () => {
+  it('undoing a create cascades to segments the entry accrued afterwards', async () => {
+    const { createEntry } = await loadCommands()
+    const entry = makeEntry({ source: 'manual' })
+    const open = makeSegment({ id: 'seg-a' })
+    const closed = makeSegment({ id: 'seg-b', endedAt: new Date('2026-08-26T11:00:00.000Z') })
+    installWorld(entry, [open, closed])
+    const { ctx } = makeCtx(entry)
+
+    await createEntry.undo({ ctx, logEntry: { payload: { undo: { after: snapshotOf(entry) } } } })
+
+    expect(entry.deletedAt).toBeInstanceOf(Date)
+    expect(open.deletedAt).toBe(entry.deletedAt)
+    expect(closed.deletedAt).toBe(entry.deletedAt)
+    expect(open.endedAt).toBe(entry.deletedAt)
+  })
+
+  it('redo restores exactly the segments the undo cascaded, keyed on the entry instant', async () => {
+    const { createEntry } = await loadCommands()
+    const entry = makeEntry({ source: 'manual' })
+    const individuallyDeletedAt = new Date('2026-08-26T12:00:00.000Z')
+    const cascaded = makeSegment({ id: 'seg-a' })
+    const individually = makeSegment({ id: 'seg-b', deletedAt: individuallyDeletedAt })
+    installWorld(entry, [cascaded, individually])
+    const { ctx } = makeCtx(entry)
+    const snapshot = snapshotOf(entry)
+
+    await createEntry.undo({ ctx, logEntry: { payload: { undo: { after: snapshot } } } })
+    const cascadeInstant = entry.deletedAt as Date
+    expect(cascaded.deletedAt).toBe(cascadeInstant)
+
+    await createEntry.redo({ input: {}, ctx, logEntry: { payload: { undo: { after: snapshot } } } })
+
+    expect(cascaded.deletedAt).toBeNull()
+    expect(cascaded.endedAt).toBeNull()
+    expect(individually.deletedAt).toBe(individuallyDeletedAt)
   })
 })
