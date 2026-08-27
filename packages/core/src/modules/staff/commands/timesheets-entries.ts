@@ -199,6 +199,13 @@ type TimeEntryStartExistingUndoState = {
   organizationId: string
   staffMemberId: string
   startedAt: string | null
+  /**
+   * The end the entry carried before the start cleared it. Absent on logs written
+   * before `execute` cleared `endedAt` — those starts left the value in place, and
+   * the undo guard below refuses whenever an end is present, so a legacy payload
+   * only ever reaches the restore with `endedAt` already null.
+   */
+  endedAt?: string | null
   source: StaffTimeEntrySource
   createdSegmentId: string
 }
@@ -952,8 +959,17 @@ const startTimerExistingCommand: CommandHandler<StaffTimeEntryStartTimerExisting
       }
 
       const previousSource = lockedEntry.source
+      const previousEndedAt = lockedEntry.endedAt
       const startedAt = new Date()
       lockedEntry.startedAt = startedAt
+      // A start opens a fresh work segment, so any end the entry already carried
+      // describes work that finished before this start. Leaving it in place writes
+      // `ended_at < started_at` and breaks two things that read the pair together:
+      // the running-timer lookup (`started_at IS NOT NULL AND ended_at IS NULL`,
+      // see `buildTimeEntryListFilters`) stops matching the entry the user just
+      // started, and this command's own undo — which treats a present `endedAt` as
+      // proof that a stop landed after the start — refuses forever.
+      lockedEntry.endedAt = null
       lockedEntry.source = 'timer'
 
       const segment = trx.create(StaffTimeEntrySegment, {
@@ -974,6 +990,7 @@ const startTimerExistingCommand: CommandHandler<StaffTimeEntryStartTimerExisting
           organizationId: lockedEntry.organizationId,
           staffMemberId: lockedEntry.staffMemberId,
           startedAt: null,
+          endedAt: previousEndedAt ? previousEndedAt.toISOString() : null,
           source: previousSource,
           createdSegmentId: segment.id,
         } satisfies TimeEntryStartExistingUndoState,
@@ -1025,7 +1042,7 @@ const startTimerExistingCommand: CommandHandler<StaffTimeEntryStartTimerExisting
         ? buildChanges(
             before as unknown as Record<string, unknown>,
             after as unknown as Record<string, unknown>,
-            ['startedAt', 'source'],
+            ['startedAt', 'endedAt', 'source'],
           )
         : undefined,
       payload: {
@@ -1082,6 +1099,7 @@ const startTimerExistingCommand: CommandHandler<StaffTimeEntryStartTimerExisting
       }
 
       lockedEntry.startedAt = before.startedAt ? new Date(before.startedAt) : null
+      lockedEntry.endedAt = before.endedAt ? new Date(before.endedAt) : null
       lockedEntry.source = before.source
 
       await trx.flush()
