@@ -1,6 +1,6 @@
 # Timesheets: segments orphaned when a time entry is soft-deleted
 
-> **Status:** design complete — ready to implement.
+> **Status:** implemented — in review on [fork PR #6](https://github.com/thegoodcodeio/open-mercato-fork/pull/6).
 > **Branch:** `fix/timesheets-timer-undo-orphan-segment`, based on `feat/timesheets-ux-improvements`
 > **Found by:** local UI QA pass on `feat/timesheets-ux-improvements`, reported on [fork PR #1](https://github.com/thegoodcodeio/open-mercato-fork/pull/1#issuecomment-5428664628)
 
@@ -8,7 +8,9 @@
 
 Soft-deleting a `StaffTimeEntry` never cascades to its `StaffTimeEntrySegment` rows: the segments keep `deleted_at = NULL` while pointing at a deleted parent. Where QA reproduced it — undoing `staff.timesheets.time_entries.start_timer` — the orphan is also left **open** (`ended_at = NULL`), a work segment still running against an entry that no longer exists.
 
-This spec introduces one cascade helper, applies it to both affected paths, makes the `delete` undo restore exactly what it removed, and backfills existing orphans.
+This spec introduces one cascade helper, applies it to every path that soft-deletes an entry, makes the `delete` undo restore exactly what it removed, and backfills existing orphans.
+
+It also covers a second defect found while validating the backfill's `COALESCE` rule: `start_timer_existing` never cleared a stale `ended_at`, producing the very `ended_at < started_at` shape the backfill has to defend against. The two ship together — § *Stale `ended_at` on `start_timer_existing`*.
 
 Pre-existing on `develop` (fork and `open-mercato/open-mercato` alike); **not** introduced by the timesheets UX branch.
 
@@ -23,6 +25,9 @@ Pre-existing on `develop` (fork and `open-mercato/open-mercato` alike); **not** 
 | `start_timer` → **undo** | The work segment created by `execute` stays live **and open** | Segment soft-deleted with the entry |
 | `time_entries.delete` | All the entry's segments stay live | Segments soft-deleted with the entry |
 | `time_entries.delete` → **undo** | Restores the entry; segments were never deleted, so they reappear (accidentally correct) | Restores the entry **and exactly the segments that delete removed** |
+| `time_entries.create` → **undo** / **redo** | Segments stay live on undo; redo cannot put them back | Cascade on undo, restore on redo, keyed off the row's own `deletedAt` |
+| bulk grid save, duration zeroed | Segments stay live | Segments soft-deleted with the entry (forward only — the route writes no action log) |
+| `start_timer_existing` | Leaves a stale `ended_at`, so the row can end before it starts | `endedAt` cleared as the segment opens, previous value carried in the undo state |
 
 Reproduced on the QA instance:
 
@@ -120,9 +125,33 @@ WHERE s.time_entry_id = e.id
 
 Adopting the parent's `deleted_at` (rather than `now()`) keeps the timestamps coherent, and deliberately does **not** collide with the recorded-instant restore path, since no pre-existing log carries `segmentsDeletedAt`.
 
-The coalesce has **two** terms, not three: the entry's own `ended_at` is deliberately not consulted. An entry can carry an `ended_at` that predates its newest segment's `started_at` — `staffTimeEntryCreateSchema` accepts `startedAt` and `endedAt` as independent optional fields, so a manual create can record an end with no start, and `POST .../timer-start` then gives that entry a `startedAt` and a fresh segment while leaving the stale `ended_at` untouched. Adopting the entry's end for such a row would write `ended_at < started_at`, a negative-duration segment that this migration's no-op `down()` can never take back. The two-term form reproduces the runtime cascade rule (`if (!segment.endedAt) segment.endedAt = deletedAt`) exactly, which is the property that matters: the repair rule and the write rule must not diverge.
+The coalesce has **two** terms, not three: the entry's own `ended_at` is deliberately not consulted. A row in the population this backfill repairs can carry an `ended_at` that predates its newest segment's `started_at` — `staffTimeEntryCreateSchema` accepts `startedAt` and `endedAt` as independent optional fields, so a manual create could record an end with no start, and `POST .../timer-start` then gave that entry a `startedAt` and a fresh segment while leaving the stale `ended_at` untouched. Adopting the entry's end for such a row would write `ended_at < started_at`, a negative-duration segment that this migration's no-op `down()` can never take back. The two-term form reproduces the runtime cascade rule (`if (!segment.endedAt) segment.endedAt = deletedAt`) exactly, which is the property that matters: the repair rule and the write rule must not diverge.
+
+**That producer is fixed in the same change** (see § *Stale `ended_at` on `start_timer_existing`* below): `startTimerExistingCommand.execute` now clears `endedAt` when it opens a segment, so no row written from here on acquires the shape. This does not make the third term safe to restore — the opposite. The backfill exists precisely for rows written *before* that fix, which are the rows that still carry the bad `ended_at`, so reintroducing it as a COALESCE term would corrupt exactly the population the migration is here to repair.
 
 Per `AGENTS.md`, the migration ships in the PR; **applying it locally is the maintainer's call and this spec does not run `yarn db:migrate`.**
+
+## 📝 Stale `ended_at` on `start_timer_existing`
+
+Found while validating the backfill's COALESCE rule above, and fixed in the same change because the two are one story about rows where `ended_at < started_at`: the migration repairs that shape in historical data, this stops new rows acquiring it.
+
+`startTimerExistingCommand.execute` set `startedAt` and `source` but never cleared `endedAt`. Starting a timer on an entry that already carried an end left `ended_at` pointing at a moment *before* the newly opened segment's `started_at`.
+
+**Reachability.** Stop-then-restart is *not* reachable: `stopTimerCommand` never reassigns `startedAt`, so a stopped entry still carries one and `start_timer_existing` rejects it with 409 `timerAlreadyStarted`. The reachable route is a manually created entry that records `endedAt` while `startedAt` is still null, followed by `POST .../timer-start`.
+
+**Consequences.**
+
+| # | Consequence | Mechanism |
+|---|---|---|
+| 1 | The started entry vanishes from the running-timer lookup, and a *second* timer can be started alongside it | `buildTimeEntryListFilters` emits `started_at $exists: true, ended_at $exists: false`; the single-active-timer guard reads the same pair |
+| 2 | Undo becomes permanently impossible | `startTimerExistingCommand.undo` treats a present `endedAt` as proof a stop landed after the start and throws 409 `timerAlreadyStopped` |
+| 3 | Durations are unaffected | `stopTimerCommand` recomputes `durationMinutes` from segments only |
+
+**The fix.** `execute` clears `endedAt` on start, records the previous value in `TimeEntryStartExistingUndoState` as an **optional** field, restores it in `undo`, and adds `endedAt` to `buildChanges`. Every reader of `endedAt` on `StaffTimeEntry` was checked (list filters, `ListView.formatTimeRange`, the undo guard, the stop-undo restore, snapshots, `buildChanges`); none depends on the stale value.
+
+**Legacy payloads are safe by construction**, not by fallback: an action log written before the fix carries no `endedAt`, and such a log only ever reaches the restore with the row's `endedAt` already null, because the undo guard refuses whenever an end is present. Both halves of that argument are pinned by tests.
+
+**Coverage.** Command-level, in `timesheets-start-timer-existing.test.ts`; all three original assertions were confirmed to fail with the source change reverted. The running-timer assertion goes through `buildTimeEntryListFilters` itself rather than a copied predicate. No integration coverage: the user-visible half of consequence 1 — a started entry missing from a live `?running=true` response and the timer bar — is not asserted end to end.
 
 ## 📝 API Contracts
 
@@ -138,7 +167,9 @@ Unchanged. No route, request, or response shape is touched — `DELETE /api/staf
 | Segment individually deleted, then the entry deleted, then undone | Individually-deleted segment keeps its own timestamp, so restore skips it — it stays deleted, as the user intended |
 | Cascade fails mid-transaction | Helper does not flush; the caller's transaction rolls back entry and segments together |
 | Concurrent segment write during cascade | Serialized by the caller's existing transaction/lock; a segment created after the cascade is a new orphan only if the entry delete already committed — covered by the `delete` command running both in one transaction |
-| Open orphan closed by the backfill | `ended_at` set to the parent's **`deleted_at`** — never the parent's `ended_at`, which can predate the segment's own `started_at`; the row is soft-deleted so no duration total changes |
+| Open orphan closed by the backfill | `ended_at` set to the parent's **`deleted_at`** — never the parent's `ended_at`, which in this population can predate the segment's own `started_at`; the row is soft-deleted so no duration total changes |
+| `start_timer_existing` on an entry that already carried an end | `endedAt` cleared as the segment opens, and the previous value carried in the undo state; the row never reaches `ended_at < started_at` |
+| Undo of a `start_timer_existing` written before the `endedAt` fix | Undo state carries no `endedAt`; the guard refuses whenever the row still has an end, so the restore is unreachable with a stale value |
 
 ## 📝 Risks & Impact Review
 
@@ -210,3 +241,5 @@ Basing here also means the two newer commands are present and visible while impl
 | 2026-08-27 | Review found two further defects, both fixed in the same PR. `bulk/route.ts` zeroes a grid cell to soft-delete an entry and did not cascade — a fourth call site, now covered by `TC-STAFF-043`. The backfill preferred the entry's `ended_at` over the delete instant, diverging from the runtime cascade, which could write `ended_at < started_at`. Verified against that exact scenario in a rolled-back transaction: the corrected two-term coalesce yields the delete instant, the original would have produced a negative duration. |
 | 2026-08-27 | Scope widened during review: `createTimeEntryCommand.undo` was a third instance of the same defect and is now fixed in the same PR. It needed more than the helper call — the command's `makeCreateRedo` is segment-unaware, so `beforeRestore` restores the cascaded segments keyed on the still-soft-deleted row's own `deletedAt`, keeping undo and redo symmetric without a payload field. |
 | 2026-08-27 | Re-review corrected the written record, no runtime change. This spec's migration section still prescribed the three-term `COALESCE(s.ended_at, e.ended_at, e.deleted_at)` that the previous round had removed from the shipped migration as a defect — the normative SQL, the "open orphan closed by the backfill" edge case, and the changelog entry above are now aligned with the two-term form that actually ships. The mechanism recorded for that defect was also wrong in both the spec and the migration docblock: `start_timer_existing` cannot restart a stopped entry (it rejects one under `LockMode.PESSIMISTIC_WRITE` with 409 `timerAlreadyStarted`). The reachable shape is a manual create that records `endedAt` with `startedAt` still null — the validator accepts the two independently — followed by `POST .../timer-start`. |
+| 2026-08-30 | Scope widened to the producer of the bad `ended_at` shape, previously carried on a separate PR (#7, now closed and superseded). `startTimerExistingCommand.execute` never cleared `endedAt`, so a timer started on an entry that already carried an end wrote `ended_at < started_at` — the exact shape the backfill's two-term COALESCE guards against in historical data. Both branches forked from the same commit and merged with zero conflicts, so the stacking recorded on both PRs was wrong; the fix was cherry-picked onto this one. Recorded in the new § *Stale `ended_at` on `start_timer_existing`*. |
+| 2026-08-30 | Documentation accuracy, no runtime change. The migration docblock and the § *Data Model & Migrations* rationale justified the two-term COALESCE in the present tense — "`POST .../timer-start` then gives that entry a `startedAt` … while leaving the stale `ended_at` untouched" — which the fix above makes false of the shipped runtime. Both are now scoped to the pre-fix population, with an explicit note that fixing the producer makes the third COALESCE term *more* wrong, not safe to restore: the rows the backfill repairs are precisely the ones still carrying the bad value. |
