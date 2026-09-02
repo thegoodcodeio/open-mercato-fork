@@ -250,6 +250,14 @@ export default function MyTimesheetsPage() {
       .replace('{project}', projectName)
       .replace('{date}', getLocalizedCellDate(date))
   ), [t])
+  const describeRowTotal = React.useCallback((projectName: string): string => (
+    t('staff.timesheets.my.duration.rowTotalLabel', 'Total for {project}')
+      .replace('{project}', projectName)
+  ), [t])
+  const describeDailyTotal = React.useCallback((date: Date): string => (
+    t('staff.timesheets.my.duration.dailyTotalLabel', 'Daily total for {date}')
+      .replace('{date}', getLocalizedCellDate(date))
+  ), [t])
   const describeDurationError = React.useCallback((reason: DurationParseError): string => (
     reason === 'out_of_range'
       ? t('staff.timesheets.my.duration.errors.out_of_range', 'Maximum 24h per day. Use 1:30 or 90m for shorter entries.')
@@ -1192,7 +1200,10 @@ export default function MyTimesheetsPage() {
                         </td>
                       )
                     })}
-                    <td className="px-3 py-1.5 text-right font-semibold text-xs tabular-nums">
+                    <td
+                      className="px-3 py-1.5 text-right font-semibold text-xs tabular-nums"
+                      aria-label={describeRowTotal(project.name)}
+                    >
                       {formatMinutesAsDecimal(getRowTotal(project.id)) || '0'}
                     </td>
                   </tr>
@@ -1218,7 +1229,11 @@ export default function MyTimesheetsPage() {
                     const weekend = isWeekendDay(date)
                     const dayMinutes = getDayTotal(date)
                     return (
-                      <td key={formatDateKey(date)} className={`py-2 text-center text-xs tabular-nums ${weekend ? 'text-muted-foreground/50' : ''}`}>
+                      <td
+                        key={formatDateKey(date)}
+                        className={`py-2 text-center text-xs tabular-nums ${weekend ? 'text-muted-foreground/50' : ''}`}
+                        aria-label={describeDailyTotal(date)}
+                      >
                         {weekend ? '-' : (formatMinutesAsDecimal(dayMinutes) || '-')}
                       </td>
                     )
