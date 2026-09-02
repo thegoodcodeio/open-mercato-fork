@@ -118,6 +118,22 @@ function cellsFor(projectName: string): HTMLInputElement[] {
   }) as HTMLInputElement[]
 }
 
+function rowTotalNameFor(projectName: string): string {
+  return `Total for ${projectName}`
+}
+
+// The daily-total cell is named after the same localized date its column's duration
+// inputs are, so deriving it from the input keeps the two in lockstep without the
+// test having to reimplement `getLocalizedCellDate`.
+function dailyTotalNameFor(cell: HTMLInputElement): string {
+  const cellName = cell.getAttribute('aria-label') ?? ''
+  const date = cellName.replace(/^Duration for .+? on /, '')
+  if (date === cellName || date.length === 0) {
+    throw new Error(`[internal] could not derive a date from cell label: ${cellName}`)
+  }
+  return `Daily total for ${date}`
+}
+
 function bulkSaveCall(): [string, { body: string }] | undefined {
   return apiCallOrThrowMock.mock.calls.find(
     ([url]) => url === '/api/staff/timesheets/time-entries/bulk',
@@ -219,12 +235,20 @@ describe('MyTimesheetsPage — duration entry (#4846)', () => {
 
   it('stops counting a cell in the totals once its pending value becomes invalid', async () => {
     const inputs = await renderGrid()
+    // Scoped to the totals on purpose. A document-wide text query also matches the
+    // day-of-month header (`<div class="text-xs">2</div>`), so it passed vacuously —
+    // and failed outright — on every week containing the 2nd of a month.
+    const rowTotal = () => screen.getByRole('cell', { name: rowTotalNameFor('Build') })
+    const dailyTotal = () => screen.getByRole('cell', { name: dailyTotalNameFor(inputs[0]) })
+
     typeAndBlur(inputs[0], '2')
-    await waitFor(() => expect(screen.getAllByText('2').length).toBeGreaterThan(0))
+    await waitFor(() => expect(dailyTotal()).toHaveTextContent(/^2$/))
+    expect(rowTotal()).toHaveTextContent(/^2$/)
 
     typeAndBlur(inputs[0], 'abc')
     await waitFor(() => expect(inputs[0]).toHaveAttribute('aria-invalid', 'true'))
-    expect(screen.queryAllByText('2')).toHaveLength(0)
+    expect(dailyTotal()).not.toHaveTextContent(/2/)
+    expect(rowTotal()).not.toHaveTextContent(/2/)
   })
 
   it('names every duration cell after its own project and date', async () => {

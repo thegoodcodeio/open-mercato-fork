@@ -366,7 +366,7 @@ export function TimerBar({
   }
 
   return (
-    <div className="flex items-center gap-3 rounded-lg border bg-card p-3 mb-4">
+    <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-card p-3 mb-4">
       <input
         type="text"
         value={description}
@@ -387,7 +387,11 @@ export function TimerBar({
           'staff.timesheets.my.timer.placeholder',
           'What are you working on?',
         )}
-        className="flex-1 bg-transparent border-0 outline-none text-sm placeholder:text-muted-foreground"
+        // `min-w-0` is what actually lets this shrink: a flex child defaults to
+        // `min-width: auto`, and an input's intrinsic minimum is its `size`
+        // attribute (~20 characters), which held the whole row open. `basis-full`
+        // then gives it its own line below `sm` rather than a ~44px sliver.
+        className="min-w-0 flex-1 basis-full bg-transparent border-0 outline-none text-sm placeholder:text-muted-foreground sm:basis-0"
       />
 
       <div className="relative" ref={dropdownRef}>
