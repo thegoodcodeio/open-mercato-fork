@@ -854,7 +854,7 @@ export default function MyTimesheetsPage() {
                 </Button>
               </div>
 
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 <ViewSwitcher
                   viewMode={viewMode}
                   onViewModeChange={() => undefined}
@@ -1015,7 +1015,7 @@ export default function MyTimesheetsPage() {
             )}
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <ViewSwitcher
               viewMode={viewMode}
               onViewModeChange={handleViewModeChange}

@@ -17,7 +17,7 @@ export function ViewSwitcher({ viewMode, onViewModeChange, viewType, onViewTypeC
   const t = useT()
 
   return (
-    <div className="flex items-center gap-4">
+    <div className="flex flex-wrap items-center gap-4">
       <div className="flex items-center gap-1 rounded-md border p-1">
         <Button
           type="button"
