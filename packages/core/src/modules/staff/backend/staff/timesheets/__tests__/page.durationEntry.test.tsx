@@ -118,20 +118,30 @@ function cellsFor(projectName: string): HTMLInputElement[] {
   }) as HTMLInputElement[]
 }
 
-function rowTotalNameFor(projectName: string): string {
-  return `Total for ${projectName}`
+// The totals cells carry no accessible name of their own: a cell's name is its own
+// value, and labelling it would mask that. They are located by position instead —
+// the row total is the last cell of the input's row, and the daily total is the
+// footer cell in the input's column. Both are derived from the input rather than
+// from the calendar, so neither depends on which days the grid happens to show.
+function cellOf(input: HTMLInputElement): HTMLTableCellElement {
+  const cell = input.closest('td')
+  if (!cell) throw new Error('[internal] duration input is not inside a table cell')
+  return cell as HTMLTableCellElement
 }
 
-// The daily-total cell is named after the same localized date its column's duration
-// inputs are, so deriving it from the input keeps the two in lockstep without the
-// test having to reimplement `getLocalizedCellDate`.
-function dailyTotalNameFor(cell: HTMLInputElement): string {
-  const cellName = cell.getAttribute('aria-label') ?? ''
-  const date = cellName.replace(/^Duration for .+? on /, '')
-  if (date === cellName || date.length === 0) {
-    throw new Error(`[internal] could not derive a date from cell label: ${cellName}`)
-  }
-  return `Daily total for ${date}`
+function rowTotalFor(input: HTMLInputElement): HTMLTableCellElement {
+  const total = cellOf(input).parentElement?.lastElementChild
+  if (!total) throw new Error('[internal] could not locate the row-total cell')
+  return total as HTMLTableCellElement
+}
+
+function dailyTotalFor(input: HTMLInputElement): HTMLTableCellElement {
+  const cell = cellOf(input)
+  const row = cell.parentElement as HTMLTableRowElement
+  const columnIndex = Array.prototype.indexOf.call(row.children, cell)
+  const total = cell.closest('table')?.tFoot?.rows[0]?.children[columnIndex]
+  if (!total) throw new Error('[internal] could not locate the daily-total cell')
+  return total as HTMLTableCellElement
 }
 
 function bulkSaveCall(): [string, { body: string }] | undefined {
@@ -238,8 +248,8 @@ describe('MyTimesheetsPage — duration entry (#4846)', () => {
     // Scoped to the totals on purpose. A document-wide text query also matches the
     // day-of-month header (`<div class="text-xs">2</div>`), so it passed vacuously —
     // and failed outright — on every week containing the 2nd of a month.
-    const rowTotal = () => screen.getByRole('cell', { name: rowTotalNameFor('Build') })
-    const dailyTotal = () => screen.getByRole('cell', { name: dailyTotalNameFor(inputs[0]) })
+    const rowTotal = () => rowTotalFor(inputs[0])
+    const dailyTotal = () => dailyTotalFor(inputs[0])
 
     typeAndBlur(inputs[0], '2')
     await waitFor(() => expect(dailyTotal()).toHaveTextContent(/^2$/))
