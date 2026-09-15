@@ -846,7 +846,7 @@ export default function MyTimesheetsPage() {
                 </Button>
               </div>
 
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 <ViewSwitcher
                   viewMode={viewMode}
                   onViewModeChange={() => undefined}
@@ -1007,7 +1007,7 @@ export default function MyTimesheetsPage() {
             )}
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <ViewSwitcher
               viewMode={viewMode}
               onViewModeChange={handleViewModeChange}
@@ -1218,7 +1218,10 @@ export default function MyTimesheetsPage() {
                     const weekend = isWeekendDay(date)
                     const dayMinutes = getDayTotal(date)
                     return (
-                      <td key={formatDateKey(date)} className={`py-2 text-center text-xs tabular-nums ${weekend ? 'text-muted-foreground/50' : ''}`}>
+                      <td
+                        key={formatDateKey(date)}
+                        className={`py-2 text-center text-xs tabular-nums ${weekend ? 'text-muted-foreground/50' : ''}`}
+                      >
                         {weekend ? '-' : (formatMinutesAsDecimal(dayMinutes) || '-')}
                       </td>
                     )

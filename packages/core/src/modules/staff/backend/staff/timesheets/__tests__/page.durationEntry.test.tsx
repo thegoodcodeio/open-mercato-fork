@@ -118,6 +118,32 @@ function cellsFor(projectName: string): HTMLInputElement[] {
   }) as HTMLInputElement[]
 }
 
+// The totals cells carry no accessible name of their own: a cell's name is its own
+// value, and labelling it would mask that. They are located by position instead —
+// the row total is the last cell of the input's row, and the daily total is the
+// footer cell in the input's column. Both are derived from the input rather than
+// from the calendar, so neither depends on which days the grid happens to show.
+function cellOf(input: HTMLInputElement): HTMLTableCellElement {
+  const cell = input.closest('td')
+  if (!cell) throw new Error('[internal] duration input is not inside a table cell')
+  return cell as HTMLTableCellElement
+}
+
+function rowTotalFor(input: HTMLInputElement): HTMLTableCellElement {
+  const total = cellOf(input).parentElement?.lastElementChild
+  if (!total) throw new Error('[internal] could not locate the row-total cell')
+  return total as HTMLTableCellElement
+}
+
+function dailyTotalFor(input: HTMLInputElement): HTMLTableCellElement {
+  const cell = cellOf(input)
+  const row = cell.parentElement as HTMLTableRowElement
+  const columnIndex = Array.prototype.indexOf.call(row.children, cell)
+  const total = cell.closest('table')?.tFoot?.rows[0]?.children[columnIndex]
+  if (!total) throw new Error('[internal] could not locate the daily-total cell')
+  return total as HTMLTableCellElement
+}
+
 function bulkSaveCall(): [string, { body: string }] | undefined {
   return apiCallOrThrowMock.mock.calls.find(
     ([url]) => url === '/api/staff/timesheets/time-entries/bulk',
@@ -219,12 +245,20 @@ describe('MyTimesheetsPage — duration entry (#4846)', () => {
 
   it('stops counting a cell in the totals once its pending value becomes invalid', async () => {
     const inputs = await renderGrid()
+    // Scoped to the totals on purpose. A document-wide text query also matches the
+    // day-of-month header (`<div class="text-xs">2</div>`), so it passed vacuously —
+    // and failed outright — on every week containing the 2nd of a month.
+    const rowTotal = () => rowTotalFor(inputs[0])
+    const dailyTotal = () => dailyTotalFor(inputs[0])
+
     typeAndBlur(inputs[0], '2')
-    await waitFor(() => expect(screen.getAllByText('2').length).toBeGreaterThan(0))
+    await waitFor(() => expect(dailyTotal()).toHaveTextContent(/^2$/))
+    expect(rowTotal()).toHaveTextContent(/^2$/)
 
     typeAndBlur(inputs[0], 'abc')
     await waitFor(() => expect(inputs[0]).toHaveAttribute('aria-invalid', 'true'))
-    expect(screen.queryAllByText('2')).toHaveLength(0)
+    expect(dailyTotal()).not.toHaveTextContent(/2/)
+    expect(rowTotal()).not.toHaveTextContent(/2/)
   })
 
   it('names every duration cell after its own project and date', async () => {
