@@ -83,6 +83,20 @@ test.describe('TC-STAFF-032: disabled Start button states its reason', () => {
       // A running timer swaps Start for Stop and there would be no hint to assert.
       await stopActiveEntries(request, employeeToken, staffMemberId)
 
+      // The picker also seeds from the saved "last started" project. A timer start
+      // earlier in the run (TC-STAFF-028) leaves one behind, which would preselect
+      // it, enable Start and remove the very hint this spec asserts.
+      const resetPreferenceResponse = await apiRequest(
+        request,
+        'PUT',
+        '/api/staff/timesheets/my-preferences',
+        { token: employeeToken, data: { lastProjectId: null } },
+      )
+      expect(
+        resetPreferenceResponse.ok(),
+        'PUT /api/staff/timesheets/my-preferences should clear the saved project',
+      ).toBeTruthy()
+
       projectId = await createTimeProjectFixture(request, adminToken, {
         name: projectName,
         code: `QSH-${stamp}`,
@@ -91,6 +105,14 @@ test.describe('TC-STAFF-032: disabled Start button states its reason', () => {
 
       await login(page, 'employee')
       await page.goto('/backend/staff/timesheets')
+
+      // The timer bar renders before the assigned projects arrive; wait for the grid
+      // so the hint is read once the picker has had its chance to seed.
+      await expect(page.getByRole('table')).toBeVisible({ timeout: 30_000 })
+      await expect(
+        page.getByRole('button', { name: 'Project', exact: true }),
+        'The picker must start unseeded for the blocked state to exist',
+      ).toBeVisible()
 
       const startButton = page.getByRole('button', { name: 'Start timer' })
       await expect(startButton).toBeVisible({ timeout: 30_000 })

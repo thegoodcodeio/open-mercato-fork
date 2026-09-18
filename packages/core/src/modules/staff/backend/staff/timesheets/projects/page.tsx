@@ -10,8 +10,7 @@ import { DataTable, withDataTableNamespaces } from '@open-mercato/ui/backend/Dat
 import type { FilterDef, FilterValues } from '@open-mercato/ui/backend/FilterOverlay'
 import { RowActions } from '@open-mercato/ui/backend/RowActions'
 import { Button } from '@open-mercato/ui/primitives/button'
-import type { ReadApiResultOrThrowOptions } from '@open-mercato/ui/backend/utils/apiCall'
-import { readApiResultOrThrow, withScopedApiRequestHeaders } from '@open-mercato/ui/backend/utils/apiCall'
+import { withScopedApiRequestHeaders } from '@open-mercato/ui/backend/utils/apiCall'
 import { buildOptimisticLockHeader } from '@open-mercato/ui/backend/utils/optimisticLock'
 import { surfaceRecordConflict } from '@open-mercato/ui/backend/conflicts'
 import { deleteCrud } from '@open-mercato/ui/backend/utils/crud'
@@ -23,6 +22,7 @@ import { useT, type TranslateFn } from '@open-mercato/shared/lib/i18n/context'
 import { formatDateTime } from '@open-mercato/shared/lib/time'
 import { ProjectColorDot } from '../../../../lib/timesheets-ui/ProjectColorDot'
 import { resolveProjectColorHex } from '../../../../lib/timesheets-ui/colors'
+import { readApiResultWithTimeout } from '../../../../lib/timesheets-ui/readApiResultWithTimeout'
 import {
   ProjectsKpiStrip,
   type PmKpis,
@@ -50,10 +50,6 @@ const logger = createLogger('staff')
 
 const PAGE_SIZE = 50
 const INCLUDE_FIELDS = 'hoursWeek,hoursTrend,members,myRole'
-const REQUEST_TIMEOUT_MS = 12_000
-type TimedReadOptions<TReturn> = ReadApiResultOrThrowOptions<TReturn> & {
-  allowNullResult?: false
-}
 
 type StaffEnrichment = {
   hoursWeek?: number
@@ -92,40 +88,6 @@ type KpisResponse = PmKpis | CollabKpis
 
 type FeatureCheckResponse = {
   granted?: string[]
-}
-
-function isAbortError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'name' in error &&
-    (error as { name?: string }).name === 'AbortError'
-  )
-}
-
-async function readApiResultWithTimeout<TReturn = Record<string, unknown>>(
-  input: RequestInfo | URL,
-  init?: RequestInit,
-  options?: TimedReadOptions<TReturn>,
-  timeoutMs = REQUEST_TIMEOUT_MS,
-): Promise<TReturn> {
-  const controller = new AbortController()
-  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs)
-
-  try {
-    return await readApiResultOrThrow<TReturn>(
-      input,
-      { ...(init ?? {}), signal: controller.signal },
-      options,
-    )
-  } catch (error) {
-    if (isAbortError(error)) {
-      throw new Error(options?.errorMessage ?? 'Request timed out.')
-    }
-    throw error
-  } finally {
-    window.clearTimeout(timeoutId)
-  }
 }
 
 function formatRelativeTime(iso: string | null, fallback: string, t: TranslateFn): string {
@@ -279,6 +241,10 @@ export default function TimesheetProjectsPage() {
       },
       errors: {
         load: t('staff.timesheets.projects.errors.load', 'Failed to load projects.'),
+        permissionsCheck: t(
+          'staff.timesheets.projects.errors.permissionsCheck',
+          'Could not check your project permissions. Manager actions are hidden until you refresh.',
+        ),
         delete: t('staff.timesheets.projects.errors.delete', 'Failed to delete project.'),
       },
       statuses: {
@@ -411,12 +377,14 @@ export default function TimesheetProjectsPage() {
       )
       const granted = Array.isArray(result?.granted) ? result.granted : []
       setCanManageProjects(granted.includes('staff.timesheets.projects.manage'))
-    } catch {
+    } catch (error) {
+      logger.error('staff.timesheets.projects.permissions', { err: error })
       setCanManageProjects(false)
+      flash(labels.errors.permissionsCheck, 'error')
     } finally {
       setIsCheckingPermissions(false)
     }
-  }, [labels.errors.load])
+  }, [labels.errors.load, labels.errors.permissionsCheck])
 
   const loadKpis = React.useCallback(async () => {
     setIsLoadingKpis(true)

@@ -4,9 +4,8 @@ import * as React from 'react'
 import { Page, PageBody } from '@open-mercato/ui/backend/Page'
 import { Button } from '@open-mercato/ui/primitives/button'
 import { IconButton } from '@open-mercato/ui/primitives/icon-button'
-import type { ReadApiResultOrThrowOptions } from '@open-mercato/ui/backend/utils/apiCall'
 import { InlineInput } from '@open-mercato/ui/primitives/inline-input'
-import { apiCall, apiCallOrThrow, readApiResultOrThrow } from '@open-mercato/ui/backend/utils/apiCall'
+import { apiCall, apiCallOrThrow } from '@open-mercato/ui/backend/utils/apiCall'
 import { useGuardedMutation } from '@open-mercato/ui/backend/injection/useGuardedMutation'
 import { flash } from '@open-mercato/ui/backend/FlashMessages'
 import { ErrorMessage, LoadingMessage } from '@open-mercato/ui/backend/detail'
@@ -22,6 +21,14 @@ import { TimerBar } from '../../../lib/timesheets-ui/TimerBar'
 import { AddRowDropdown } from '../../../lib/timesheets-ui/AddRowDropdown'
 import { CreateProjectDialog } from '../../../lib/timesheets-ui/CreateProjectDialog'
 import { ProjectColorDot } from '../../../lib/timesheets-ui/ProjectColorDot'
+import { readApiResultWithTimeout } from '../../../lib/timesheets-ui/readApiResultWithTimeout'
+import {
+  clampDateToMonth,
+  getDaysInMonth,
+  getMonday,
+  getWeekAnchor,
+  normalizeLocalDate,
+} from '../../../lib/timesheets-ui/dateAnchor'
 import {
   formatMinutesAsDecimal,
   parseDurationInput,
@@ -44,55 +51,7 @@ type ViewType = 'timesheet' | 'list'
 
 type RawTimeEntry = Record<string, unknown>
 
-const REQUEST_TIMEOUT_MS = 12_000
-type TimedReadOptions<TReturn> = ReadApiResultOrThrowOptions<TReturn> & {
-  allowNullResult?: false
-}
-
-function isAbortError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'name' in error &&
-    (error as { name?: string }).name === 'AbortError'
-  )
-}
-
-async function readApiResultWithTimeout<TReturn = Record<string, unknown>>(
-  input: RequestInfo | URL,
-  init?: RequestInit,
-  options?: TimedReadOptions<TReturn>,
-  timeoutMs = REQUEST_TIMEOUT_MS,
-): Promise<TReturn> {
-  const controller = new AbortController()
-  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs)
-
-  try {
-    return await readApiResultOrThrow<TReturn>(
-      input,
-      { ...(init ?? {}), signal: controller.signal },
-      options,
-    )
-  } catch (error) {
-    if (isAbortError(error)) {
-      throw new Error(options?.errorMessage ?? 'Request timed out.')
-    }
-    throw error
-  } finally {
-    window.clearTimeout(timeoutId)
-  }
-}
-
 // --- Date Helpers ---
-
-function getMonday(date: Date): Date {
-  const d = new Date(date)
-  const day = d.getDay()
-  const diff = day === 0 ? -6 : 1 - day
-  d.setDate(d.getDate() + diff)
-  d.setHours(0, 0, 0, 0)
-  return d
-}
 
 function getSunday(monday: Date): Date {
   const d = new Date(monday)
@@ -118,10 +77,6 @@ function formatDateKeyFromParts(year: number, month: number, day: number): strin
   const m = String(month + 1).padStart(2, '0')
   const d = String(day).padStart(2, '0')
   return `${year}-${m}-${d}`
-}
-
-function getDaysInMonth(year: number, month: number): number {
-  return new Date(year, month + 1, 0).getDate()
 }
 
 function isWeekendDay(date: Date): boolean {
@@ -173,17 +128,6 @@ function formatWeekLabel(weekStart: Date): string {
 function formatMonthLabel(year: number, month: number): string {
   const date = new Date(year, month, 1)
   return date.toLocaleString(undefined, { month: 'long', year: 'numeric' })
-}
-
-function normalizeLocalDate(date: Date): Date {
-  const next = new Date(date)
-  next.setHours(0, 0, 0, 0)
-  return next
-}
-
-function clampDateToMonth(baseDate: Date, year: number, month: number): Date {
-  const clampedDay = Math.min(baseDate.getDate(), getDaysInMonth(year, month))
-  return normalizeLocalDate(new Date(year, month, clampedDay))
 }
 
 // --- Component ---
@@ -344,6 +288,8 @@ export default function MyTimesheetsPage() {
     if (viewMode === 'weekly') return formatWeekLabel(weekStart)
     return formatMonthLabel(monthYear, monthIndex)
   }, [viewMode, weekStart, monthYear, monthIndex])
+  const previousPeriodLabel = t('staff.timesheets.my.previousPeriod', 'Previous period')
+  const nextPeriodLabel = t('staff.timesheets.my.nextPeriod', 'Next period')
 
   // --- Data loading ---
   const isInitialLoadRef = React.useRef(true)
@@ -565,6 +511,10 @@ export default function MyTimesheetsPage() {
     return cellEntries.reduce((sum, e) => sum + e.minutes, 0)
   }, [dirty, entries])
 
+  // A load error with nothing on screen is shown by the dedicated unavailable state
+  // below, so the banner above the content only appears alongside loaded data.
+  const hasLoadedData = allAssignedProjects.length > 0 || rawEntries.length > 0
+
   // --- Save ---
   const hasChanges = Object.keys(dirty).length > 0 || Object.keys(rawText).length > 0
   const invalidCellCount = React.useMemo(
@@ -688,11 +638,8 @@ export default function MyTimesheetsPage() {
   }, [anchorDate])
 
   const handleWeekSelect = React.useCallback((nextWeekStart: Date) => {
-    const normalizedWeekStart = getMonday(nextWeekStart)
-    const weekAnchor = new Date(normalizedWeekStart)
-    weekAnchor.setDate(weekAnchor.getDate() + 3)
-    setWeekStart(normalizedWeekStart)
-    setAnchorDate(normalizeLocalDate(weekAnchor))
+    setWeekStart(getMonday(nextWeekStart))
+    setAnchorDate(getWeekAnchor(nextWeekStart))
   }, [])
 
   // --- Add row handler ---
@@ -835,13 +782,13 @@ export default function MyTimesheetsPage() {
 
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2">
-                <Button variant="outline" size="icon" type="button" disabled>
+                <Button variant="outline" size="icon" type="button" disabled aria-label={previousPeriodLabel}>
                   <ChevronLeft className="size-4" />
                 </Button>
                 <span className="text-sm font-semibold min-w-[220px] text-center">
                   {navigationLabel}
                 </span>
-                <Button variant="outline" size="icon" type="button" disabled>
+                <Button variant="outline" size="icon" type="button" disabled aria-label={nextPeriodLabel}>
                   <ChevronRight className="size-4" />
                 </Button>
               </div>
@@ -995,11 +942,11 @@ export default function MyTimesheetsPage() {
         {/* Navigation + controls */}
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="icon" type="button" onClick={goToPrev}>
+            <Button variant="outline" size="icon" type="button" onClick={goToPrev} aria-label={previousPeriodLabel}>
               <ChevronLeft className="size-4" />
             </Button>
             <span className="text-sm font-semibold min-w-[220px] text-center">{navigationLabel}</span>
-            <Button variant="outline" size="icon" type="button" onClick={goToNext}>
+            <Button variant="outline" size="icon" type="button" onClick={goToNext} aria-label={nextPeriodLabel}>
               <ChevronRight className="size-4" />
             </Button>
             {viewMode === 'weekly' && (
@@ -1033,7 +980,7 @@ export default function MyTimesheetsPage() {
 
         {/* Content: Grid or List */}
         <div className={isRefreshing ? 'opacity-50 pointer-events-none transition-opacity' : 'transition-opacity'}>
-        {loadError ? (
+        {loadError && hasLoadedData ? (
           <div className="mb-4">
             <ErrorMessage
               label={loadError}
@@ -1045,9 +992,9 @@ export default function MyTimesheetsPage() {
             />
           </div>
         ) : null}
-        {isContentLoading && allAssignedProjects.length === 0 && rawEntries.length === 0 ? (
+        {isContentLoading && !hasLoadedData ? (
           <LoadingMessage label={t('staff.timesheets.my.loadingContent', 'Loading your projects and entries...')} />
-        ) : allAssignedProjects.length === 0 && rawEntries.length === 0 && loadError ? (
+        ) : !hasLoadedData && loadError ? (
           <div className="rounded-lg border border-dashed border-border bg-card p-8">
             <ErrorMessage
               label={t('staff.timesheets.my.errors.unavailable', 'Timesheet data is temporarily unavailable.')}

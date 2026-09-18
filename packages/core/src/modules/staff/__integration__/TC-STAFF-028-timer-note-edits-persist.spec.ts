@@ -103,6 +103,7 @@ test.describe('TC-STAFF-028: Running Timer Note Edits Persist', () => {
       await projectButton.click()
       await page.getByRole('button', { name: new RegExp(`QA Timer UX ${stamp}`) }).click()
       await page.getByRole('button', { name: /start timer/i }).click()
+      await expect(page.getByRole('button', { name: /stop timer/i })).toBeVisible({ timeout: 30_000 })
 
       await expect(noteInput).toHaveValue(initialNote)
       await noteInput.fill(updatedNote)

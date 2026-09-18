@@ -82,7 +82,11 @@ export function TimerBar({
   const [isSavingDescription, setIsSavingDescription] = useState(false)
   const [showProjectDropdown, setShowProjectDropdown] = useState(false)
   const [projectFilter, setProjectFilter] = useState('')
+  const [hasPendingNoteSync, setHasPendingNoteSync] = useState(false)
 
+  const descriptionRef = useRef(description)
+  const persistedDescriptionRef = useRef(persistedDescription)
+  const startRequestedRef = useRef(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const hasSeededRef = useRef(false)
@@ -133,9 +137,27 @@ export function TimerBar({
   }, [])
 
   useEffect(() => {
+    descriptionRef.current = description
+    persistedDescriptionRef.current = persistedDescription
+  }, [description, persistedDescription])
+
+  // The server's note only replaces the field when the user has nothing unsaved in
+  // it. Text typed while this bar's own start is still in flight (Enter does nothing
+  // until the timer runs) would otherwise be overwritten by the note the start was
+  // sent with. A timer started elsewhere (another tab, the dashboard widget) always
+  // adopts the server note, so a half-typed draft is never saved onto it.
+  // The latest field values are read through refs so typing does not re-run this.
+  useEffect(() => {
     if (activeTimer.running && activeTimer.startedAt) {
       startElapsedCounter(activeTimer.startedAt)
-      if (activeTimer.notes != null) {
+      const hasUnsavedEdit =
+        descriptionRef.current.trim() !== persistedDescriptionRef.current.trim()
+      const isOwnStart = startRequestedRef.current
+      startRequestedRef.current = false
+      if (hasUnsavedEdit && isOwnStart) {
+        if (activeTimer.notes != null) setPersistedDescription(activeTimer.notes)
+        setHasPendingNoteSync(true)
+      } else if (activeTimer.notes != null) {
         setDescription(activeTimer.notes)
         setPersistedDescription(activeTimer.notes)
       }
@@ -250,6 +272,7 @@ export function TimerBar({
         date: today,
         notes: description || null,
       }
+      startRequestedRef.current = true
       await runMutation({
         operation: () => startTimerEntry(startPayload),
         context: {
@@ -275,6 +298,7 @@ export function TimerBar({
 
       await activeTimer.refresh()
     } catch (err) {
+      startRequestedRef.current = false
       flash(
         resolveTimerActionError(err, t('staff.timesheets.my.timer.startError', 'Failed to start timer')),
         'error',
@@ -324,12 +348,20 @@ export function TimerBar({
     }
   }, [activeEntryId, description, persistedDescription, runMutation, staffMemberId, retryLastMutation, t])
 
+  useEffect(() => {
+    if (!hasPendingNoteSync || !isRunning || !activeEntryId) return
+    setHasPendingNoteSync(false)
+    void saveRunningDescription()
+  }, [hasPendingNoteSync, isRunning, activeEntryId, saveRunningDescription])
+
   const handleStop = async () => {
     if (!activeEntryId) return
 
     setIsStopping(true)
     try {
-      await saveRunningDescription()
+      // A failed note save already flashed its error; stopping anyway would bury
+      // the unsaved note behind a stopped timer.
+      if (!(await saveRunningDescription())) return
       const stopPayload = {
         id: activeEntryId,
         action: 'timer-stop',
