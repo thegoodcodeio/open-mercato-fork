@@ -516,7 +516,7 @@ export default function MyTimesheetsPage() {
   const hasLoadedData = allAssignedProjects.length > 0 || rawEntries.length > 0
 
   // --- Save ---
-  const hasChanges =Object.keys(dirty).length > 0 || Object.keys(rawText).length > 0
+  const hasChanges = Object.keys(dirty).length > 0 || Object.keys(rawText).length > 0
   const invalidCellCount = React.useMemo(
     () => Object.values(cellErrors).reduce((sum, projectErrors) => sum + Object.keys(projectErrors).length, 0),
     [cellErrors],

@@ -241,6 +241,10 @@ export default function TimesheetProjectsPage() {
       },
       errors: {
         load: t('staff.timesheets.projects.errors.load', 'Failed to load projects.'),
+        permissionsCheck: t(
+          'staff.timesheets.projects.errors.permissionsCheck',
+          'Could not check your project permissions. Manager actions are hidden until you refresh.',
+        ),
         delete: t('staff.timesheets.projects.errors.delete', 'Failed to delete project.'),
       },
       statuses: {
@@ -376,11 +380,11 @@ export default function TimesheetProjectsPage() {
     } catch (error) {
       logger.error('staff.timesheets.projects.permissions', { err: error })
       setCanManageProjects(false)
-      flash(labels.errors.load, 'error')
+      flash(labels.errors.permissionsCheck, 'error')
     } finally {
       setIsCheckingPermissions(false)
     }
-  }, [labels.errors.load])
+  }, [labels.errors.load, labels.errors.permissionsCheck])
 
   const loadKpis = React.useCallback(async () => {
     setIsLoadingKpis(true)

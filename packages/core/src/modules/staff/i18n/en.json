@@ -1075,6 +1075,7 @@
   "staff.timesheets.projects.errors.fieldRequired": "Required",
   "staff.timesheets.projects.errors.load": "Failed to load project.",
   "staff.timesheets.projects.errors.notFound": "Project not found.",
+  "staff.timesheets.projects.errors.permissionsCheck": "Could not check your project permissions. Manager actions are hidden until you refresh.",
   "staff.timesheets.projects.errors.required": "Name and code are required.",
   "staff.timesheets.projects.errors.save": "Failed to save project.",
   "staff.timesheets.projects.form.actions.cancel": "Cancel",

@@ -1075,6 +1075,7 @@
   "staff.timesheets.projects.errors.fieldRequired": "필수 입력",
   "staff.timesheets.projects.errors.load": "프로젝트를 불러오지 못했습니다.",
   "staff.timesheets.projects.errors.notFound": "프로젝트를 찾을 수 없습니다.",
+  "staff.timesheets.projects.errors.permissionsCheck": "프로젝트 권한을 확인하지 못했습니다. 페이지를 새로 고칠 때까지 관리자 작업이 숨겨집니다.",
   "staff.timesheets.projects.errors.required": "이름과 코드는 필수입니다.",
   "staff.timesheets.projects.errors.save": "프로젝트를 저장하지 못했습니다.",
   "staff.timesheets.projects.form.actions.cancel": "취소",

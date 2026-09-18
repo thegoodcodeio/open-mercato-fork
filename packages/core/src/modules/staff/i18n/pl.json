@@ -1075,6 +1075,7 @@
   "staff.timesheets.projects.errors.fieldRequired": "Wymagane",
   "staff.timesheets.projects.errors.load": "Nie udało się załadować projektu.",
   "staff.timesheets.projects.errors.notFound": "Nie znaleziono projektu.",
+  "staff.timesheets.projects.errors.permissionsCheck": "Nie udało się sprawdzić Twoich uprawnień do projektów. Działania menedżera są ukryte do czasu odświeżenia strony.",
   "staff.timesheets.projects.errors.required": "Nazwa i kod są wymagane.",
   "staff.timesheets.projects.errors.save": "Nie udało się zapisać projektu.",
   "staff.timesheets.projects.form.actions.cancel": "Anuluj",

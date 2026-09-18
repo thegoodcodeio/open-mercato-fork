@@ -1075,6 +1075,7 @@
   "staff.timesheets.projects.errors.fieldRequired": "Pflichtfeld",
   "staff.timesheets.projects.errors.load": "Projekt konnte nicht geladen werden.",
   "staff.timesheets.projects.errors.notFound": "Projekt nicht gefunden.",
+  "staff.timesheets.projects.errors.permissionsCheck": "Ihre Projektberechtigungen konnten nicht geprüft werden. Manager-Aktionen sind ausgeblendet, bis Sie die Seite aktualisieren.",
   "staff.timesheets.projects.errors.required": "Name und Code sind erforderlich.",
   "staff.timesheets.projects.errors.save": "Projekt konnte nicht gespeichert werden.",
   "staff.timesheets.projects.form.actions.cancel": "Abbrechen",

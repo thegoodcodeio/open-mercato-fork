@@ -187,6 +187,18 @@ describe('TimerBar — note typed while a start is in flight', () => {
     expect(notesPutCalls()).toHaveLength(0)
   })
 
+  it('does not save a draft note onto a timer started elsewhere', async () => {
+    renderTimerBar()
+    fireEvent.change(noteInput(), { target: { value: 'Draft note' } })
+
+    act(() => mockTimerStore.set(runningTimer('Server note')))
+    await waitFor(() => expect(noteInput()).toHaveValue('Server note'))
+
+    await act(async () => {})
+    expect(notesPutCalls()).toHaveLength(0)
+    expect(startTimerEntryMock).not.toHaveBeenCalled()
+  })
+
   it('does not stop the timer when saving the edited note fails', async () => {
     mockTimerStore.state = { ...IDLE_TIMER, ...runningTimer('Build task') } as MockTimerState
     apiCallOrThrowMock.mockImplementation(async (url: string, init?: { method?: string }) => {

@@ -86,6 +86,7 @@ export function TimerBar({
 
   const descriptionRef = useRef(description)
   const persistedDescriptionRef = useRef(persistedDescription)
+  const startRequestedRef = useRef(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const hasSeededRef = useRef(false)
@@ -141,15 +142,19 @@ export function TimerBar({
   }, [description, persistedDescription])
 
   // The server's note only replaces the field when the user has nothing unsaved in
-  // it. Text typed while a start is still in flight (Enter does nothing until the
-  // timer runs) would otherwise be overwritten by the note the start was sent with.
+  // it. Text typed while this bar's own start is still in flight (Enter does nothing
+  // until the timer runs) would otherwise be overwritten by the note the start was
+  // sent with. A timer started elsewhere (another tab, the dashboard widget) always
+  // adopts the server note, so a half-typed draft is never saved onto it.
   // The latest field values are read through refs so typing does not re-run this.
   useEffect(() => {
     if (activeTimer.running && activeTimer.startedAt) {
       startElapsedCounter(activeTimer.startedAt)
       const hasUnsavedEdit =
         descriptionRef.current.trim() !== persistedDescriptionRef.current.trim()
-      if (hasUnsavedEdit) {
+      const isOwnStart = startRequestedRef.current
+      startRequestedRef.current = false
+      if (hasUnsavedEdit && isOwnStart) {
         if (activeTimer.notes != null) setPersistedDescription(activeTimer.notes)
         setHasPendingNoteSync(true)
       } else if (activeTimer.notes != null) {
@@ -267,6 +272,7 @@ export function TimerBar({
         date: today,
         notes: description || null,
       }
+      startRequestedRef.current = true
       await runMutation({
         operation: () => startTimerEntry(startPayload),
         context: {
@@ -292,6 +298,7 @@ export function TimerBar({
 
       await activeTimer.refresh()
     } catch (err) {
+      startRequestedRef.current = false
       flash(
         resolveTimerActionError(err, t('staff.timesheets.my.timer.startError', 'Failed to start timer')),
         'error',

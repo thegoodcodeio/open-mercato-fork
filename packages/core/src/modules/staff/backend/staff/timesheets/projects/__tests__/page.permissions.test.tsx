@@ -223,7 +223,12 @@ describe('TimesheetProjectsPage — manage permission from the feature check', (
     await waitFor(() =>
       expect(mockLogger.error).toHaveBeenCalledWith('staff.timesheets.projects.permissions', { err: failure }),
     )
-    await waitFor(() => expect(flashMock).toHaveBeenCalledWith('Failed to load projects.', 'error'))
+    await waitFor(() =>
+      expect(flashMock).toHaveBeenCalledWith(
+        'Could not check your project permissions. Manager actions are hidden until you refresh.',
+        'error',
+      ),
+    )
     await waitFor(() => expect(callsTo(PROJECTS_URL).length).toBeGreaterThan(0))
 
     expect(addProjectLink()).not.toBeInTheDocument()
