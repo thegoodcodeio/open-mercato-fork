@@ -200,6 +200,7 @@ export default function TimesheetProjectsPage() {
   const [isLoading, setIsLoading] = React.useState(true)
   const [isRefreshing, setIsRefreshing] = React.useState(false)
   const hasLoadedOnceRef = React.useRef(false)
+  const hasFlashedPermissionsFailureRef = React.useRef(false)
   const [reloadToken, setReloadToken] = React.useState(0)
   const [kpis, setKpis] = React.useState<KpisResponse | null>(null)
   const [isLoadingKpis, setIsLoadingKpis] = React.useState(true)
@@ -377,10 +378,17 @@ export default function TimesheetProjectsPage() {
       )
       const granted = Array.isArray(result?.granted) ? result.granted : []
       setCanManageProjects(granted.includes('staff.timesheets.projects.manage'))
+      hasFlashedPermissionsFailureRef.current = false
     } catch (error) {
       logger.error('staff.timesheets.projects.permissions', { err: error })
       setCanManageProjects(false)
-      flash(labels.errors.permissionsCheck, 'error')
+      // The organization scope resolves after mount and re-runs this check, so a
+      // failing endpoint produces two identical rejections per page load. Flash on
+      // the transition into the failed state only; a later success re-arms it.
+      if (!hasFlashedPermissionsFailureRef.current) {
+        hasFlashedPermissionsFailureRef.current = true
+        flash(labels.errors.permissionsCheck, 'error')
+      }
     } finally {
       setIsCheckingPermissions(false)
     }

@@ -12,8 +12,10 @@ jest.mock('@open-mercato/shared/lib/i18n/context', () => {
   return { useT: () => translate }
 })
 
+let mockScopeVersion = 0
+
 jest.mock('@open-mercato/shared/lib/frontend/useOrganizationScope', () => ({
-  useOrganizationScopeVersion: () => 0,
+  useOrganizationScopeVersion: () => mockScopeVersion,
 }))
 
 // The page creates its logger at import time, before any top-level `const` in this
@@ -107,6 +109,8 @@ const KPIS_URL = '/api/staff/timesheets/projects/kpis'
 const PROJECTS_URL = '/api/staff/timesheets/time-projects'
 const CREATE_HREF = '/backend/staff/timesheets/projects/create'
 const CHECKING_MESSAGE = 'Checking your project permissions...'
+const PERMISSIONS_FAILURE_MESSAGE =
+  'Could not check your project permissions. Manager actions are hidden until you refresh.'
 
 const COLLAB_KPIS = {
   role: 'collab',
@@ -158,6 +162,7 @@ function savedViewLabels(): string[] {
 describe('TimesheetProjectsPage — manage permission from the feature check', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    mockScopeVersion = 0
   })
 
   it('grants manager affordances from the feature check even when the KPI payload says collaborator', async () => {
@@ -223,15 +228,45 @@ describe('TimesheetProjectsPage — manage permission from the feature check', (
     await waitFor(() =>
       expect(mockLogger.error).toHaveBeenCalledWith('staff.timesheets.projects.permissions', { err: failure }),
     )
-    await waitFor(() =>
-      expect(flashMock).toHaveBeenCalledWith(
-        'Could not check your project permissions. Manager actions are hidden until you refresh.',
-        'error',
-      ),
-    )
+    await waitFor(() => expect(flashMock).toHaveBeenCalledWith(PERMISSIONS_FAILURE_MESSAGE, 'error'))
     await waitFor(() => expect(callsTo(PROJECTS_URL).length).toBeGreaterThan(0))
 
     expect(addProjectLink()).not.toBeInTheDocument()
     expect(lastProjectsQuery().get('mine')).toBe('1')
+  })
+
+  it('flashes a failed feature check once when the organization scope re-runs the check', async () => {
+    stubReads(new Error('HTTP 503'))
+    const view = render(<TimesheetProjectsPage />)
+
+    await waitFor(() => expect(callsTo(FEATURE_CHECK_URL)).toHaveLength(1))
+    await waitFor(() => expect(flashMock).toHaveBeenCalledTimes(1))
+
+    mockScopeVersion = 1
+    view.rerender(<TimesheetProjectsPage />)
+
+    await waitFor(() => expect(callsTo(FEATURE_CHECK_URL)).toHaveLength(2))
+    await waitFor(() => expect(mockLogger.error).toHaveBeenCalledTimes(2))
+
+    expect(flashMock).toHaveBeenCalledTimes(1)
+    expect(flashMock).toHaveBeenCalledWith(PERMISSIONS_FAILURE_MESSAGE, 'error')
+  })
+
+  it('flashes again when a recovered check fails once more', async () => {
+    stubReads(new Error('HTTP 503'))
+    const view = render(<TimesheetProjectsPage />)
+    await waitFor(() => expect(flashMock).toHaveBeenCalledTimes(1))
+
+    stubReads({ granted: [MANAGE_FEATURE] })
+    mockScopeVersion = 1
+    view.rerender(<TimesheetProjectsPage />)
+    expect(await screen.findByRole('link', { name: 'Add Project' })).toBeInTheDocument()
+
+    stubReads(new Error('HTTP 503'))
+    mockScopeVersion = 2
+    view.rerender(<TimesheetProjectsPage />)
+
+    await waitFor(() => expect(flashMock).toHaveBeenCalledTimes(2))
+    expect(addProjectLink()).not.toBeInTheDocument()
   })
 })
