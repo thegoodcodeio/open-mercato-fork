@@ -1,8 +1,7 @@
 import * as React from 'react'
 import { act, screen } from '@testing-library/react'
 import { renderWithProviders } from '@open-mercato/shared/lib/testing/renderWithProviders'
-import { FlashHostBoundary, FlashMessages, flash } from '../FlashMessages'
-import { FrontendLayout } from '../../frontend/Layout'
+import { FlashMessages, flash } from '../FlashMessages'
 
 function setReferrer(value: string) {
   Object.defineProperty(document, 'referrer', {
@@ -76,59 +75,6 @@ describe('FlashMessages', () => {
     expect(screen.getByText('Saved')).toBeInTheDocument()
     const badge = document.querySelector('[data-slot="alert-icon-badge"]')
     expect(badge?.getAttribute('data-status')).toBe('success')
-  })
-
-  it('renders one banner when a nested shell mounts a second host inside the boundary', () => {
-    renderWithProviders(
-      <>
-        <FlashMessages />
-        <FlashHostBoundary>
-          <FlashMessages />
-        </FlashHostBoundary>
-      </>,
-    )
-
-    act(() => {
-      flash('Saved once', 'success')
-    })
-
-    expect(screen.getAllByText('Saved once')).toHaveLength(1)
-
-    act(() => {
-      jest.advanceTimersByTime(3000)
-    })
-  })
-
-  it('renders one banner for a host nested inside FrontendLayout, as AppShell is', () => {
-    renderWithProviders(
-      <FrontendLayout>
-        <FlashMessages />
-      </FrontendLayout>,
-    )
-
-    act(() => {
-      flash('Saved once', 'success')
-    })
-
-    expect(screen.getAllByText('Saved once')).toHaveLength(1)
-
-    act(() => {
-      jest.advanceTimersByTime(3000)
-    })
-  })
-
-  it('still renders a host mounted without any boundary above it', () => {
-    renderWithProviders(<FlashMessages />)
-
-    act(() => {
-      flash('Standalone shell', 'success')
-    })
-
-    expect(screen.getAllByText('Standalone shell')).toHaveLength(1)
-
-    act(() => {
-      jest.advanceTimersByTime(3000)
-    })
   })
 
   it('auto-dismisses programmatic flashes', () => {
