@@ -200,7 +200,20 @@ function FlashMessagesInner() {
   )
 }
 
+const FlashHostContext = React.createContext(false)
+
+// A layout that already renders a host wraps its children in this boundary, so a
+// nested shell (for example `AppShell` inside `FrontendLayout`) does not mount a
+// second host. Every host answers the same window event, and each renders its own
+// banner, so two hosts show the same message twice.
+export function FlashHostBoundary({ children }: { children: React.ReactNode }) {
+  return <FlashHostContext.Provider value={true}>{children}</FlashHostContext.Provider>
+}
+
 export function FlashMessages() {
+  const hasAncestorHost = React.useContext(FlashHostContext)
+  if (hasAncestorHost) return null
+
   return (
     <React.Suspense fallback={null}>
       <FlashMessagesInner />
