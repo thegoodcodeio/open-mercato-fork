@@ -209,8 +209,17 @@ export default function TimesheetPage() {
 
   const [isInitialLoad, setIsInitialLoad] = React.useState(true)
   const [isRefreshing, setIsRefreshing] = React.useState(false)
-  /** Which reads came back empty on the last load; `['all']` when none did. */
+  /**
+   * Which reads failed on the last load, and whether the period itself is
+   * truthful. These are deliberately separate: losing the assignment list costs
+   * the grid's opt-in rows and losing the project list costs row labels, both of
+   * which degrade a period that is still accurate. Losing the ENTRY read means
+   * the numbers for this period are simply unknown, and a screen that feeds
+   * `rounded_minutes` (D-7 — the only input to cost) must not present the
+   * previous period's numbers, or a bare empty week, as if they were this one's.
+   */
   const [loadFailures, setLoadFailures] = React.useState<string[]>([])
+  const [periodLoaded, setPeriodLoaded] = React.useState(false)
   const [createDialogOpen, setCreateDialogOpen] = React.useState(false)
   const [entryDialog, setEntryDialog] = React.useState<{ open: boolean; entryId: string | null; date: string }>({
     open: false,
@@ -280,6 +289,7 @@ export default function TimesheetPage() {
       if (!myStaffMemberId) {
         setData({ ...EMPTY_DATA, staffMemberMissing: true })
         setLoadFailures([])
+        setPeriodLoaded(true)
         return
       }
 
@@ -351,12 +361,20 @@ export default function TimesheetPage() {
       ).slice(0, PAGE_SIZE)
 
       const [projectsPayload, tasksPayload, entryTasksPayload, settingsPayload] = await Promise.all([
+        // `allowNullResult` only tolerates an empty body — a non-2xx still throws,
+        // and an unhandled throw here would unwind past `setData` and leave the
+        // PREVIOUS period's entries on screen labelled as this one. Degraded to a
+        // recorded failure: the period keeps its numbers, the rows lose their names.
         projectIds.length > 0
           ? readApiResultOrThrow<Record<string, unknown>>(
               `/api/staff/timesheets/time-projects?ids=${projectIds.join(',')}&pageSize=${PAGE_SIZE}`,
               undefined,
               { allowNullResult: true },
-            )
+            ).catch((error: unknown) => {
+              logger.error('staff.time_tracking.timesheet projects load failed', { err: error })
+              failures.push('projects')
+              return {} as Record<string, unknown>
+            })
           : Promise.resolve({} as Record<string, unknown>),
         readApiResultOrThrow<Record<string, unknown>>(
           `/api/staff/timesheets/tasks?pageSize=${PAGE_SIZE}`,
@@ -425,9 +443,14 @@ export default function TimesheetPage() {
         truncated,
       })
       setLoadFailures(failures)
+      setPeriodLoaded(entriesResult.status === 'fulfilled')
     } catch (error) {
       logger.error('staff.time_tracking.timesheet load failed', { err: error })
+      // Nothing was verified for this period, so drop what the last one left
+      // behind rather than let the footer and the views keep reporting it.
+      setData((current) => ({ ...current, entries: [], truncated: false }))
       setLoadFailures(['all'])
+      setPeriodLoaded(false)
       flash(loadError, 'error')
     } finally {
       hasLoadedOnceRef.current = true
@@ -443,12 +466,13 @@ export default function TimesheetPage() {
   const viewingSelf = personFilter === ALL_OPTION_VALUE || personFilter === data.staffMemberId
   const readOnly = !viewingSelf
 
-  // A failed load with nothing on screen gets the dedicated unavailable state; a
-  // failed load beside data that did arrive gets a banner over that data, so a
-  // partial answer is never mistaken for an empty period.
-  const hasAnyData =
-    data.assignedProjectIds.length > 0 || data.projects.length > 0 || data.entries.length > 0
+  // An unknown period gets the dedicated unavailable state; a period that loaded
+  // beside some other failed read gets a banner over it. Keyed on whether the
+  // ENTRY read succeeded, never on whether the period happens to be empty — an
+  // ordinary week with nothing logged yet is a truthful period, not a failure.
   const hasLoadFailure = loadFailures.length > 0
+  const showUnavailable = hasLoadFailure && !periodLoaded
+  const showPartialBanner = hasLoadFailure && periodLoaded
   const retryAction = (
     <Button
       size="sm"
@@ -763,7 +787,7 @@ export default function TimesheetPage() {
           </div>
 
           <div className={isRefreshing ? 'p-4 opacity-50 transition-opacity' : 'p-4 transition-opacity'}>
-            {hasLoadFailure && hasAnyData ? (
+            {showPartialBanner ? (
               <div className="mb-3">
                 <ErrorMessage label={partialLoadError} action={retryAction} />
               </div>
@@ -779,7 +803,7 @@ export default function TimesheetPage() {
               </p>
             ) : null}
 
-            {hasLoadFailure && !hasAnyData ? (
+            {showUnavailable ? (
               <div className="rounded-lg border border-dashed border-border bg-card p-8">
                 <ErrorMessage
                   label={t('staff.timesheets.my.errors.unavailable', 'Timesheet data is temporarily unavailable.')}
@@ -788,7 +812,7 @@ export default function TimesheetPage() {
               </div>
             ) : null}
 
-            {!hasLoadFailure || hasAnyData ? (
+            {periodLoaded ? (
               <>
               {view === 'calendar' ? (
                 <TimesheetCalendar
@@ -850,7 +874,7 @@ export default function TimesheetPage() {
             ) : null}
           </div>
 
-          <TimesheetPeriodFooter summary={summary} dailyHours={data.dailyHours} />
+          {periodLoaded ? <TimesheetPeriodFooter summary={summary} dailyHours={data.dailyHours} /> : null}
         </div>
       </PageBody>
 

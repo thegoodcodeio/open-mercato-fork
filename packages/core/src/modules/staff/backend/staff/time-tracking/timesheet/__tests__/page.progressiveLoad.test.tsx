@@ -82,7 +82,7 @@ const useSearchParamsMock = useSearchParams as jest.MockedFunction<typeof useSea
 const PARTIAL_MESSAGE = 'Some timesheet data could not be loaded. Try again.'
 const UNAVAILABLE_MESSAGE = 'Timesheet data is temporarily unavailable.'
 
-type Failing = { assignments?: boolean; entries?: boolean }
+type Failing = { assignments?: boolean; entries?: boolean; projects?: boolean; emptyPeriod?: boolean }
 
 /**
  * Every read answers unless this run marks it failing, so each test names only the
@@ -100,6 +100,7 @@ function stubReads(failing: Failing = {}): void {
     }
     if (href.startsWith('/api/staff/timesheets/time-entries')) {
       if (failing.entries) throw new Error('entries unavailable')
+      if (failing.emptyPeriod) return { items: [], totalPages: 1 } as never
       return {
         items: [
           {
@@ -114,6 +115,7 @@ function stubReads(failing: Failing = {}): void {
       } as never
     }
     if (href.startsWith('/api/staff/timesheets/time-projects')) {
+      if (failing.projects) throw new Error('projects unavailable')
       return { items: [{ id: PROJECT_ID, name: 'Apollo', code: 'APL', color: null }] } as never
     }
     if (href.startsWith('/api/staff/timesheets/settings')) {
@@ -160,13 +162,18 @@ describe('timesheet progressive load', () => {
     expect(screen.queryByText(UNAVAILABLE_MESSAGE)).not.toBeInTheDocument()
   })
 
-  it('renders the period with a banner when only the entry read fails', async () => {
+  it('withholds the period entirely when the entry read fails', async () => {
+    // Entries are not one degradable read among several: without them the numbers
+    // for this period are unknown, and this screen feeds `rounded_minutes` (D-7 —
+    // the only input to cost). Showing a grid whose cells cannot be trusted would
+    // be worse than showing nothing, so this failure is never a mere banner.
     stubReads({ entries: true })
 
     await renderPage()
 
-    expect(screen.getByTestId('grid-view')).toBeInTheDocument()
-    expect(screen.getByText(PARTIAL_MESSAGE)).toBeInTheDocument()
+    expect(screen.getByText(UNAVAILABLE_MESSAGE)).toBeInTheDocument()
+    expect(screen.queryByTestId('grid-view')).not.toBeInTheDocument()
+    expect(screen.queryByText(PARTIAL_MESSAGE)).not.toBeInTheDocument()
   })
 
   it('shows the unavailable state, not an empty period, when nothing loads', async () => {
@@ -191,6 +198,59 @@ describe('timesheet progressive load', () => {
     expect(screen.queryByText(UNAVAILABLE_MESSAGE)).not.toBeInTheDocument()
     expect(screen.queryByText(PARTIAL_MESSAGE)).not.toBeInTheDocument()
     expect(screen.getByTestId('grid-view')).toBeInTheDocument()
+  })
+
+  it('treats an empty period as loaded, not as a failure, when assignments fail', async () => {
+    // An ordinary week with nothing logged yet answers with zero rows. That is a
+    // truthful period, so it must still render its views — hiding them behind the
+    // unavailable state would leave the member unable to add the first entry.
+    stubReads({ assignments: true, emptyPeriod: true })
+
+    await renderPage()
+
+    expect(screen.getByTestId('grid-view')).toBeInTheDocument()
+    expect(screen.getByText(PARTIAL_MESSAGE)).toBeInTheDocument()
+    expect(screen.queryByText(UNAVAILABLE_MESSAGE)).not.toBeInTheDocument()
+  })
+
+  it('renders an empty period cleanly when every read succeeds', async () => {
+    stubReads({ emptyPeriod: true })
+
+    await renderPage()
+
+    expect(screen.getByTestId('grid-view')).toBeInTheDocument()
+    expect(screen.queryByText(PARTIAL_MESSAGE)).not.toBeInTheDocument()
+    expect(screen.queryByText(UNAVAILABLE_MESSAGE)).not.toBeInTheDocument()
+  })
+
+  it('degrades a failing project read to a banner instead of unwinding the load', async () => {
+    // `allowNullResult` tolerates an empty body but not a non-2xx, so this read
+    // used to throw past `setData` and strand the previous period on screen.
+    stubReads({ projects: true })
+
+    await renderPage()
+
+    expect(screen.getByTestId('grid-view')).toBeInTheDocument()
+    expect(screen.getByText(PARTIAL_MESSAGE)).toBeInTheDocument()
+    expect(screen.queryByText(UNAVAILABLE_MESSAGE)).not.toBeInTheDocument()
+  })
+
+  it('never shows the previous period once a reload leaves the period unknown', async () => {
+    // Opens degraded-but-loaded, which is what puts a Retry on screen to drive
+    // the reload with.
+    stubReads({ projects: true })
+    await renderPage()
+    expect(screen.getByTestId('grid-view')).toBeInTheDocument()
+
+    // The entry read is what makes a period knowable; losing it must take the
+    // views down rather than leave last period's numbers labelled as this one's.
+    stubReads({ entries: true })
+    await act(async () => {
+      await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    })
+
+    expect(screen.getByText(UNAVAILABLE_MESSAGE)).toBeInTheDocument()
+    expect(screen.queryByTestId('grid-view')).not.toBeInTheDocument()
   })
 
   it('keeps a healthy load free of both failure states', async () => {
