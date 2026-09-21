@@ -30,7 +30,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { Plus } from 'lucide-react'
 import { Page, PageBody } from '@open-mercato/ui/backend/Page'
 import { Button } from '@open-mercato/ui/primitives/button'
-import { LoadingMessage } from '@open-mercato/ui/backend/detail'
+import { ErrorMessage, LoadingMessage } from '@open-mercato/ui/backend/detail'
 import { flash } from '@open-mercato/ui/backend/FlashMessages'
 import { apiCallOrThrow, readApiResultOrThrow } from '@open-mercato/ui/backend/utils/apiCall'
 import { createCrud } from '@open-mercato/ui/backend/utils/crud'
@@ -42,6 +42,7 @@ import { hasFeature } from '@open-mercato/shared/security/features'
 import { useT } from '@open-mercato/shared/lib/i18n/context'
 import { createLogger } from '@open-mercato/shared/lib/logger'
 import { TimerBar } from '../../../../lib/timesheets-ui/TimerBar'
+import { readApiResultWithTimeout } from '../../../../lib/timesheets-ui/readApiResultWithTimeout'
 import { CreateProjectDialog } from '../../../../lib/timesheets-ui/CreateProjectDialog'
 import { ListView } from '../../../../lib/timesheets-ui/ListView'
 import { TimeEntryDialog } from '../../../../lib/time-tracking-ui/TimeEntryDialog'
@@ -145,15 +146,18 @@ function readMemberPreviews(row: Record<string, unknown>): MemberPreview[] {
     .filter((member): member is MemberPreview => member !== null)
 }
 
-async function loadEntryPages(params: URLSearchParams): Promise<{ rows: Record<string, unknown>[]; truncated: boolean }> {
+async function loadEntryPages(
+  params: URLSearchParams,
+  errorMessage: string,
+): Promise<{ rows: Record<string, unknown>[]; truncated: boolean }> {
   const rows: Record<string, unknown>[] = []
   let truncated = false
   for (let page = 1; page <= MAX_ENTRY_PAGES; page += 1) {
     params.set('page', String(page))
-    const payload = await readApiResultOrThrow<{ items?: Record<string, unknown>[]; totalPages?: number }>(
+    const payload = await readApiResultWithTimeout<{ items?: Record<string, unknown>[]; totalPages?: number }>(
       `/api/${ENTRIES_API_PATH}?${params.toString()}`,
       undefined,
-      { fallback: { items: [], totalPages: 1 } },
+      { errorMessage, fallback: { items: [], totalPages: 1 } },
     )
     const items = Array.isArray(payload.items) ? payload.items : []
     rows.push(...items)
@@ -205,6 +209,8 @@ export default function TimesheetPage() {
 
   const [isInitialLoad, setIsInitialLoad] = React.useState(true)
   const [isRefreshing, setIsRefreshing] = React.useState(false)
+  /** Which reads came back empty on the last load; `['all']` when none did. */
+  const [loadFailures, setLoadFailures] = React.useState<string[]>([])
   const [createDialogOpen, setCreateDialogOpen] = React.useState(false)
   const [entryDialog, setEntryDialog] = React.useState<{ open: boolean; entryId: string | null; date: string }>({
     open: false,
@@ -257,11 +263,15 @@ export default function TimesheetPage() {
   })
 
   const loadError = t('staff.timesheets.my.errors.load', 'Failed to load timesheets.')
+  const partialLoadError = t(
+    'staff.timesheets.my.errors.partialLoad',
+    'Some timesheet data could not be loaded. Try again.',
+  )
 
   const loadData = React.useCallback(async () => {
     if (hasLoadedOnceRef.current) setIsRefreshing(true)
     try {
-      const selfPayload = await readApiResultOrThrow<{ member?: { id: string } | null }>(
+      const selfPayload = await readApiResultWithTimeout<{ member?: { id: string } | null }>(
         '/api/staff/team-members/self',
         undefined,
         { errorMessage: loadError, fallback: { member: null } },
@@ -269,24 +279,11 @@ export default function TimesheetPage() {
       const myStaffMemberId = selfPayload.member?.id ?? null
       if (!myStaffMemberId) {
         setData({ ...EMPTY_DATA, staffMemberMissing: true })
+        setLoadFailures([])
         return
       }
 
       const targetStaffMemberId = personFilter !== ALL_OPTION_VALUE ? personFilter : myStaffMemberId
-
-      const assignmentsPayload = await readApiResultOrThrow<{ items?: Record<string, unknown>[] }>(
-        `/api/staff/timesheets/my-projects?pageSize=${PAGE_SIZE}`,
-        undefined,
-        { errorMessage: loadError, fallback: { items: [] } },
-      )
-      const assignments = Array.isArray(assignmentsPayload.items) ? assignmentsPayload.items : []
-      const assignedProjectIds = assignments
-        .map((item) => String(item.time_project_id ?? item.timeProjectId ?? ''))
-        .filter((id) => id.length > 0)
-      const visibleProjectIds = assignments
-        .filter((item) => item.show_in_grid === true || item.showInGrid === true)
-        .map((item) => String(item.time_project_id ?? item.timeProjectId ?? ''))
-        .filter((id) => id.length > 0)
 
       const entryParams = new URLSearchParams({
         pageSize: String(PAGE_SIZE),
@@ -297,7 +294,48 @@ export default function TimesheetPage() {
         sortDir: 'asc',
       })
       if (projectFilter !== ALL_OPTION_VALUE) entryParams.set('projectId', projectFilter)
-      const { rows: entryRows, truncated } = await loadEntryPages(entryParams)
+
+      // The assignment list and the entry pages are independent reads, and a period
+      // is still worth rendering when only one of them answers: losing assignments
+      // costs the grid's opt-in rows, losing entries costs the numbers. Settled
+      // separately so one failure cannot blank a screen the other could have filled.
+      const [assignmentsResult, entriesResult] = await Promise.allSettled([
+        readApiResultWithTimeout<{ items?: Record<string, unknown>[] }>(
+          `/api/staff/timesheets/my-projects?pageSize=${PAGE_SIZE}`,
+          undefined,
+          { errorMessage: loadError, fallback: { items: [] } },
+        ),
+        loadEntryPages(entryParams, loadError),
+      ])
+
+      const failures: string[] = []
+
+      let assignedProjectIds: string[] = []
+      let visibleProjectIds: string[] = []
+      if (assignmentsResult.status === 'fulfilled') {
+        const assignments = Array.isArray(assignmentsResult.value.items) ? assignmentsResult.value.items : []
+        assignedProjectIds = assignments
+          .map((item) => String(item.time_project_id ?? item.timeProjectId ?? ''))
+          .filter((id) => id.length > 0)
+        visibleProjectIds = assignments
+          .filter((item) => item.show_in_grid === true || item.showInGrid === true)
+          .map((item) => String(item.time_project_id ?? item.timeProjectId ?? ''))
+          .filter((id) => id.length > 0)
+      } else {
+        logger.error('staff.time_tracking.timesheet assignments load failed', { err: assignmentsResult.reason })
+        failures.push('assignments')
+      }
+
+      let entryRows: Record<string, unknown>[] = []
+      let truncated = false
+      if (entriesResult.status === 'fulfilled') {
+        entryRows = entriesResult.value.rows
+        truncated = entriesResult.value.truncated
+      } else {
+        logger.error('staff.time_tracking.timesheet entries load failed', { err: entriesResult.reason })
+        failures.push('entries')
+      }
+
       const entries = entryRows
         .map((row) => toTimesheetEntry(row))
         .filter((entry): entry is TimesheetEntry => entry !== null)
@@ -386,8 +424,10 @@ export default function TimesheetPage() {
         dailyHours,
         truncated,
       })
+      setLoadFailures(failures)
     } catch (error) {
       logger.error('staff.time_tracking.timesheet load failed', { err: error })
+      setLoadFailures(['all'])
       flash(loadError, 'error')
     } finally {
       hasLoadedOnceRef.current = true
@@ -402,6 +442,25 @@ export default function TimesheetPage() {
 
   const viewingSelf = personFilter === ALL_OPTION_VALUE || personFilter === data.staffMemberId
   const readOnly = !viewingSelf
+
+  // A failed load with nothing on screen gets the dedicated unavailable state; a
+  // failed load beside data that did arrive gets a banner over that data, so a
+  // partial answer is never mistaken for an empty period.
+  const hasAnyData =
+    data.assignedProjectIds.length > 0 || data.projects.length > 0 || data.entries.length > 0
+  const hasLoadFailure = loadFailures.length > 0
+  const retryAction = (
+    <Button
+      size="sm"
+      type="button"
+      variant="outline"
+      onClick={() => {
+        void loadData()
+      }}
+    >
+      {t('staff.timesheets.my.retry', 'Retry')}
+    </Button>
+  )
 
   const days = React.useMemo(() => buildTimesheetDays(range, data.entries), [data.entries, range])
   const dayIndex = React.useMemo(() => indexDaysByDate(days), [days])
@@ -652,6 +711,7 @@ export default function TimesheetPage() {
             color: project.color,
           }))}
           staffMemberId={data.staffMemberId}
+          visibleProjectIds={data.visibleProjectIds}
           onTimerStopped={() => {
             void loadData()
           }}
@@ -703,6 +763,12 @@ export default function TimesheetPage() {
           </div>
 
           <div className={isRefreshing ? 'p-4 opacity-50 transition-opacity' : 'p-4 transition-opacity'}>
+            {hasLoadFailure && hasAnyData ? (
+              <div className="mb-3">
+                <ErrorMessage label={partialLoadError} action={retryAction} />
+              </div>
+            ) : null}
+
             {data.truncated ? (
               <p className="mb-3 text-xs text-muted-foreground">
                 {t(
@@ -713,61 +779,74 @@ export default function TimesheetPage() {
               </p>
             ) : null}
 
-            {view === 'calendar' ? (
-              <TimesheetCalendar
-                monthAnchors={monthAnchors}
-                days={dayIndex}
-                scaleMinutes={scaleMinutes}
-                todayDate={todayIso()}
-                showMonthHeadings={monthAnchors.length > 1}
-                onAddEntry={(date) => {
-                  if (!canManageOwn || readOnly) return
-                  openEntryDialog(date, null)
-                }}
-                onSelectEntry={(entry) => openEntryDialog(entry.date, entry.id)}
-              />
+            {hasLoadFailure && !hasAnyData ? (
+              <div className="rounded-lg border border-dashed border-border bg-card p-8">
+                <ErrorMessage
+                  label={t('staff.timesheets.my.errors.unavailable', 'Timesheet data is temporarily unavailable.')}
+                  action={retryAction}
+                />
+              </div>
             ) : null}
 
-            {view === 'list' ? (
-              <ListView
-                days={days}
-                scaleMinutes={scaleMinutes}
-                dailyTargetMinutes={dailyTargetMinutes}
-                expandedDate={expandedDate}
-                onExpandedDateChange={(date) => {
-                  setExpandedTouched(true)
-                  setExpandedDate(date)
-                }}
-                targets={logTargets}
-                showAuthor={!viewingSelf}
-                authorNames={new Map(data.people.map((person) => [person.id, person.name]))}
-                canManage={canManageOwn && !readOnly}
-                onQuickAdd={handleQuickAdd}
-                onEditEntry={(entry) => openEntryDialog(entry.date, entry.id)}
-                onDuplicateEntry={(entry) => {
-                  void handleDuplicate(entry)
-                }}
-              />
-            ) : null}
+            {!hasLoadFailure || hasAnyData ? (
+              <>
+              {view === 'calendar' ? (
+                <TimesheetCalendar
+                  monthAnchors={monthAnchors}
+                  days={dayIndex}
+                  scaleMinutes={scaleMinutes}
+                  todayDate={todayIso()}
+                  showMonthHeadings={monthAnchors.length > 1}
+                  onAddEntry={(date) => {
+                    if (!canManageOwn || readOnly) return
+                    openEntryDialog(date, null)
+                  }}
+                  onSelectEntry={(entry) => openEntryDialog(entry.date, entry.id)}
+                />
+              ) : null}
 
-            {view === 'grid' ? (
-              <GridView
-                days={eachDayIso(range)}
-                projects={gridProjects}
-                allAssignedProjects={assignedProjects}
-                tasks={data.tasks}
-                entries={data.entries}
-                staffMemberId={data.staffMemberId}
-                canManage={canManageOwn}
-                canManageProjects={canManageProjects}
-                readOnly={readOnly}
-                rowMode={rowMode}
-                onRowModeChange={setRowMode}
-                onAddProject={(project) => handleVisibilityToggle(project, true)}
-                onRemoveProject={handleRemoveProject}
-                onCreateProject={() => setCreateDialogOpen(true)}
-                onSaved={loadData}
-              />
+              {view === 'list' ? (
+                <ListView
+                  days={days}
+                  scaleMinutes={scaleMinutes}
+                  dailyTargetMinutes={dailyTargetMinutes}
+                  expandedDate={expandedDate}
+                  onExpandedDateChange={(date) => {
+                    setExpandedTouched(true)
+                    setExpandedDate(date)
+                  }}
+                  targets={logTargets}
+                  showAuthor={!viewingSelf}
+                  authorNames={new Map(data.people.map((person) => [person.id, person.name]))}
+                  canManage={canManageOwn && !readOnly}
+                  onQuickAdd={handleQuickAdd}
+                  onEditEntry={(entry) => openEntryDialog(entry.date, entry.id)}
+                  onDuplicateEntry={(entry) => {
+                    void handleDuplicate(entry)
+                  }}
+                />
+              ) : null}
+
+              {view === 'grid' ? (
+                <GridView
+                  days={eachDayIso(range)}
+                  projects={gridProjects}
+                  allAssignedProjects={assignedProjects}
+                  tasks={data.tasks}
+                  entries={data.entries}
+                  staffMemberId={data.staffMemberId}
+                  canManage={canManageOwn}
+                  canManageProjects={canManageProjects}
+                  readOnly={readOnly}
+                  rowMode={rowMode}
+                  onRowModeChange={setRowMode}
+                  onAddProject={(project) => handleVisibilityToggle(project, true)}
+                  onRemoveProject={handleRemoveProject}
+                  onCreateProject={() => setCreateDialogOpen(true)}
+                  onSaved={loadData}
+                />
+              ) : null}
+              </>
             ) : null}
           </div>
 

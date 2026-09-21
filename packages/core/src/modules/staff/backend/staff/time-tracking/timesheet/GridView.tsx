@@ -844,7 +844,15 @@ function DefaultGridView({
                           inputClassName={cn(
                             'text-center px-1 tabular-nums',
                             dense ? 'text-xs' : null,
-                            minutes > 0 ? 'font-semibold' : 'text-muted-foreground',
+                            // The cell behind a pending edit is tinted `status-warning-bg`,
+                            // against which `text-muted-foreground` drops below contrast in
+                            // dark mode — so a dirty cell takes the paired status text token.
+                            isDirty
+                              ? 'text-status-warning-text'
+                              : minutes > 0
+                                ? 'text-foreground'
+                                : 'text-muted-foreground',
+                            minutes > 0 ? 'font-semibold' : null,
                           )}
                         />
                       )}
