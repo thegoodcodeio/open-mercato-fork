@@ -18,7 +18,7 @@ import {
   loadTimesheetPreference,
   saveTimesheetPreference,
 } from '../../../lib/timesheets/timesheetPreferenceService'
-import { resolveUserFeatures, runStaffMutationGuardAfterSuccess, runStaffMutationGuards } from '../../guards'
+import { runStaffMutationGuardAfterSuccess, runStaffMutationGuards } from '../../guards'
 
 const logger = createLogger('staff')
 
@@ -168,7 +168,6 @@ export async function PUT(req: Request) {
         requestHeaders: req.headers,
         mutationPayload: parsed.data as unknown as Record<string, unknown>,
       },
-      resolveUserFeatures(auth),
     )
     if (!guardResult.ok) {
       return NextResponse.json(

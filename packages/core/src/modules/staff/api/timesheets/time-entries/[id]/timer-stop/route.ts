@@ -11,10 +11,11 @@ import { parseScopedCommandInput } from '@open-mercato/shared/lib/api/scoped'
 import type { OpenApiRouteDoc } from '@open-mercato/shared/lib/openapi'
 import { staffTimeEntryStopTimerSchema, type StaffTimeEntryStopTimerInput } from '../../../../../data/validators'
 import {
-  resolveUserFeatures,
+  STAFF_TIME_TRACKING_RESOURCE_KINDS,
   runStaffMutationGuardAfterSuccess,
   runStaffMutationGuards,
 } from '../../../../guards'
+import { runTimesheetInterceptors } from '../../../_shared/withTimesheetInterceptors'
 import { createLogger } from '@open-mercato/shared/lib/logger'
 
 const logger = createLogger('staff')
@@ -74,21 +75,30 @@ export async function POST(req: Request) {
       { messages: { tenantRequired: missingScopeMessage, organizationRequired: missingScopeMessage } },
     )
 
+    const interceptors = await runTimesheetInterceptors({
+      request: req,
+      method: 'POST',
+      scope: {
+        container: ctx.container,
+        userId: ctx.auth?.sub,
+        tenantId: input.tenantId,
+        organizationId: input.organizationId,
+      },
+    })
+    if (!interceptors.ok) return interceptors.response
+    const { session } = interceptors
+
     const guardContext = {
       tenantId: input.tenantId,
       organizationId: input.organizationId,
       userId: ctx.auth?.sub ?? '',
-      resourceKind: 'staff.timesheets.time_entry',
+      resourceKind: STAFF_TIME_TRACKING_RESOURCE_KINDS.timeEntry,
       resourceId: input.id,
       operation: 'update' as const,
       requestMethod: req.method,
       requestHeaders: req.headers,
     }
-    const guardResult = await runStaffMutationGuards(
-      ctx.container,
-      guardContext,
-      resolveUserFeatures(ctx.auth),
-    )
+    const guardResult = await runStaffMutationGuards(ctx.container, guardContext)
     if (!guardResult.ok) {
       return NextResponse.json(
         guardResult.errorBody ?? { error: 'Operation blocked by guard' },
@@ -106,10 +116,7 @@ export async function POST(req: Request) {
       await runStaffMutationGuardAfterSuccess(guardResult.afterSuccessCallbacks, guardContext)
     }
 
-    const response = NextResponse.json(
-      { ok: true, durationMinutes: result?.durationMinutes ?? 0 },
-      { status: 200 },
-    )
+    const response = await session.respond(200, { ok: true, durationMinutes: result?.durationMinutes ?? 0 })
     if (logEntry?.undoToken && logEntry?.id && logEntry?.commandId) {
       response.headers.set(
         'x-om-operation',
@@ -118,7 +125,7 @@ export async function POST(req: Request) {
           undoToken: logEntry.undoToken,
           commandId: logEntry.commandId,
           actionLabel: logEntry.actionLabel ?? null,
-          resourceKind: logEntry.resourceKind ?? 'staff.timesheets.time_entry',
+          resourceKind: logEntry.resourceKind ?? STAFF_TIME_TRACKING_RESOURCE_KINDS.timeEntry,
           resourceId: logEntry.resourceId ?? result?.timeEntryId ?? null,
           executedAt: logEntry.createdAt instanceof Date ? logEntry.createdAt.toISOString() : undefined,
         }),
@@ -152,7 +159,11 @@ export const openApi: OpenApiRouteDoc = {
           schema: z.object({ ok: z.literal(true), durationMinutes: z.number() }),
         },
         { status: 404, description: 'Time entry not found', schema: z.object({ error: z.string() }) },
-        { status: 409, description: 'No active timer segment', schema: z.object({ error: z.string() }) },
+        {
+          status: 409,
+          description: 'No active timer segment, or the entry is locked in a closed report (code time_entry_locked)',
+          schema: z.object({ error: z.string(), code: z.string().optional(), lockedReportId: z.string().uuid().nullable().optional() }),
+        },
         { status: 401, description: 'Unauthorized', schema: z.object({ error: z.string() }) },
       ],
     },
