@@ -1264,7 +1264,11 @@ const stopTimerCommand: CommandHandler<StaffTimeEntryStopTimerInput, StopTimerRe
 
     // Stopping a timer rewrites `duration_minutes`, which is exactly what a
     // closed report froze — same gate as the entries command.
-    assertTimeEntryUnlocked(entry, (await resolveTranslations()).translate)
+    // Resolved once, before the row lock is taken: the gate below re-runs on the
+    // happy path of every stop, and awaiting an i18n load while holding a
+    // PESSIMISTIC_WRITE lock would widen the window other writers queue behind.
+    const { translate: lockTranslate } = await resolveTranslations()
+    assertTimeEntryUnlocked(entry, lockTranslate)
 
     // Ownership enforcement is deliberately owner-only here: unlike
     // createTimeEntryCommand / startTimerCommand / updateTimeEntryCommand, this
@@ -1301,7 +1305,7 @@ const stopTimerCommand: CommandHandler<StaffTimeEntryStopTimerInput, StopTimerRe
       }
       // Re-checked under the row lock: a report close committed between the
       // pre-flight read and this transaction would otherwise slip through.
-      assertTimeEntryUnlocked(lockedEntry, (await resolveTranslations()).translate)
+      assertTimeEntryUnlocked(lockedEntry, lockTranslate)
 
       const segments = await findWithDecryption(
         trx,
@@ -1556,7 +1560,9 @@ const startTimerExistingCommand: CommandHandler<StaffTimeEntryStartTimerExisting
 
     // Running a timer on a frozen entry is only ever the first half of changing
     // its duration, so it is refused at the same gate the entries command uses.
-    assertTimeEntryUnlocked(entry, (await resolveTranslations()).translate)
+    // Resolved once, before the row lock is taken — see stopTimerCommand.
+    const { translate: lockTranslate } = await resolveTranslations()
+    assertTimeEntryUnlocked(entry, lockTranslate)
 
     // Owner-only, matching both the route this replaces and stopTimerCommand.
     // The `staff.timesheets.manage_all` bypass in createTimeEntryCommand /
@@ -1591,7 +1597,7 @@ const startTimerExistingCommand: CommandHandler<StaffTimeEntryStartTimerExisting
       }
       // Re-checked under the row lock: a report close committed between the
       // pre-flight read and this transaction would otherwise slip through.
-      assertTimeEntryUnlocked(lockedEntry, (await resolveTranslations()).translate)
+      assertTimeEntryUnlocked(lockedEntry, lockTranslate)
       if (lockedEntry.startedAt) {
         const { translate } = await resolveTranslations()
         throw new CrudHttpError(409, {

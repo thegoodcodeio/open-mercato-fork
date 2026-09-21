@@ -3,8 +3,8 @@ import * as path from 'path'
 
 // Carried over from the retired `/backend/staff/timesheets` page, whose grid this
 // one replaced. The dirty-cell guard is the reason it still exists: the pending-edit
-// cue is a warning SURFACE, and a warning surface whose foreground is left unpinned
-// is the 1.01:1 dark-mode regression this file was written for.
+// cue is a warning SURFACE, and a surface token left paired with an unpinned
+// foreground is how that cue has regressed before.
 const GRID_SOURCE = path.resolve(__dirname, '..', 'GridView.tsx')
 
 const STATUS_PALETTES = 'red|orange|amber|yellow|lime|green|emerald|sky|blue|rose'
@@ -31,9 +31,9 @@ describe('timesheet grid DS contract', () => {
   it('marks a dirty cell with warning tokens that carry dedicated dark-mode values', () => {
     const source = readGridSource()
 
-    // Both halves are required. The surface lands on the `<td>`; the legible
+    // Both halves are required. The surface lands on the `<td>`; the paired
     // foreground lands on the `DurationInput` via `inputClassName`. A warning
-    // background with `text-muted-foreground` over it is the regression.
+    // background left with `text-muted-foreground` over it is the regression.
     expect(source).toContain("'bg-status-warning-bg'")
     expect(source).toMatch(/isDirty\s*\n?\s*\?\s*'text-status-warning-text'/)
     expect(source).not.toContain('border-amber-400')
