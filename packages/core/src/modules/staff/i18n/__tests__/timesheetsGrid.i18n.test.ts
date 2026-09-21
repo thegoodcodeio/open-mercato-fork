@@ -17,6 +17,7 @@ import * as path from 'node:path'
 const LANGUAGE_NEUTRAL = new Set([
   'staff.timesheets.my.durationPlaceholder', // "0"
   'staff.timesheets.projects.form.codePlaceholder', // "PROJECT-001"
+  'staff.timesheets.projects.detail.costBasis', // "{hours} × {rate}" — placeholders and a multiplication sign
 ])
 
 // Real words that are genuinely spelled the same in the target language. Adding
@@ -36,6 +37,7 @@ const SAME_IN_LOCALE: Record<string, Set<string>> = {
   es: new Set([
     'staff.timesheets.my.total', // "Total"
     'staff.timesheets.widgets.hoursByProject.total',
+    'staff.timesheets.projects.detail.no', // "No"
   ]),
   de: new Set([
     'staff.timesheets.my.status', // "Status"
@@ -46,6 +48,11 @@ const SAME_IN_LOCALE: Record<string, Set<string>> = {
     'staff.timesheets.projects.form.name', // "Name"
     'staff.timesheets.projects.table.name',
     'staff.timesheets.projects.portfolio.team', // "Team"
+    'staff.timesheets.projects.detail.tabTeam',
+    'staff.timesheets.projects.detail.details', // "Details"
+    'staff.timesheets.projects.detail.colWho', // "Person"
+    'staff.timesheets.projects.form.budget', // "Budget"
+    'staff.timesheets.projects.detail.budgetBadge', // "Budget {percent}%"
   ]),
 }
 

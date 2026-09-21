@@ -57,7 +57,7 @@ jest.mock('@open-mercato/core/modules/staff/lib/timesheets/timeEntryCacheInvalid
 }))
 
 jest.mock('@open-mercato/core/modules/staff/api/guards', () => ({
-  resolveUserFeatures: jest.fn(() => ['staff.timesheets.manage_own']),
+  ...jest.requireActual('@open-mercato/core/modules/staff/api/guards'),
   runStaffMutationGuards: jest.fn(async () => ({ ok: true, afterSuccessCallbacks: [] })),
   runStaffMutationGuardAfterSuccess: jest.fn(async () => undefined),
 }))
@@ -107,6 +107,10 @@ function makeEm() {
     // The route pre-validates entry ownership with `em.find`, and resolves valid
     // projects with it too; the entry query is the one carrying `staffMemberId`.
     find: jest.fn(async (_cls: unknown, where: Record<string, unknown> = {}) => {
+      // The report-lock pre-flight asks for entries that ARE frozen and also
+      // carries `staffMemberId`; this fixture's entry is not locked, so that probe
+      // must come back empty or the save is refused with 409 `time_entry_locked`.
+      if ('lockedReportId' in where) return []
       if ('staffMemberId' in where) return [entry]
       return [{ id: PROJECT_ID, tenantId: TENANT_ID, organizationId: ORG_ID }]
     }),

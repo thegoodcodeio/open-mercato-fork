@@ -51,7 +51,7 @@ jest.mock('@open-mercato/shared/lib/i18n/server', () => ({
 }))
 
 jest.mock('@open-mercato/core/modules/staff/api/guards', () => ({
-  resolveUserFeatures: jest.fn(() => ['staff.timesheets.manage_own']),
+  STAFF_TIME_TRACKING_RESOURCE_KINDS: { timeEntry: 'staff.timesheets.time_entry' },
   runStaffMutationGuards: jest.fn((...args: unknown[]) => mockRunStaffMutationGuards(...args)),
   runStaffMutationGuardAfterSuccess: jest.fn((...args: unknown[]) =>
     mockRunStaffMutationGuardAfterSuccess(...args),

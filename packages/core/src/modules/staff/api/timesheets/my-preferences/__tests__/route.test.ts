@@ -44,14 +44,16 @@ jest.mock('@open-mercato/shared/lib/crud/optimistic-lock-command', () => ({
   enforceCommandOptimisticLockWithGuards: jest.fn((...args: unknown[]) => mockEnforceCommandOptimisticLock(...args)),
 }))
 
-jest.mock('@open-mercato/shared/lib/logger', () => ({
-  createLogger: jest.fn(() => ({
+jest.mock('@open-mercato/shared/lib/logger', () => {
+  const makeLogger = (): Record<string, unknown> => ({
     error: (...args: unknown[]) => mockLoggerError(...args),
     warn: jest.fn(),
     info: jest.fn(),
     debug: jest.fn(),
-  })),
-}))
+    child: jest.fn(() => makeLogger()),
+  })
+  return { createLogger: jest.fn(() => makeLogger()) }
+})
 
 jest.mock('../../../../lib/timesheets/timesheetPreferenceService', () => ({
   loadTimesheetPreference: jest.fn((...args: unknown[]) => mockLoadTimesheetPreference(...args)),
@@ -181,7 +183,6 @@ describe('staff timesheets my-preferences route', () => {
           requestMethod: 'PUT',
           mutationPayload: { lastProjectId: CLIENT_PROJECT_ID },
         }),
-        expect.any(Array),
       )
       expect(mockSaveTimesheetPreference).not.toHaveBeenCalled()
       expect(mockRunStaffMutationGuardAfterSuccess).not.toHaveBeenCalled()

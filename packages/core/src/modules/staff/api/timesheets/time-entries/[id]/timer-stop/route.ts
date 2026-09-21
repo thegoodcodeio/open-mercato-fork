@@ -6,6 +6,7 @@ import { resolveOrganizationScopeForRequest } from '@open-mercato/core/modules/d
 import { serializeOperationMetadata } from '@open-mercato/shared/lib/commands/operationMetadata'
 import type { CommandRuntimeContext, CommandBus } from '@open-mercato/shared/lib/commands'
 import { CrudHttpError, isCrudHttpError } from '@open-mercato/shared/lib/crud/errors'
+import { getCommandInterceptorHttpRejection } from '@open-mercato/shared/lib/commands/errors'
 import { resolveTranslations } from '@open-mercato/shared/lib/i18n/server'
 import { parseScopedCommandInput } from '@open-mercato/shared/lib/api/scoped'
 import type { OpenApiRouteDoc } from '@open-mercato/shared/lib/openapi'
@@ -135,6 +136,13 @@ export async function POST(req: Request) {
   } catch (err) {
     if (isCrudHttpError(err)) {
       return NextResponse.json(err.body, { status: err.status })
+    }
+    // Routing this write through the command bus put a command interceptor
+    // between the request and the handler, so its rejection carries the status
+    // the interceptor chose and must not be flattened into the generic 400.
+    const interceptorRejection = getCommandInterceptorHttpRejection(err)
+    if (interceptorRejection) {
+      return NextResponse.json(interceptorRejection.body, { status: interceptorRejection.status })
     }
     const { translate } = await resolveTranslations()
     logger.error('staff.timesheets.time-entries.timer-stop failed', { err })
