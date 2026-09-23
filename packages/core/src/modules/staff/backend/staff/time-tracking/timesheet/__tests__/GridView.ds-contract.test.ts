@@ -31,10 +31,11 @@ describe('timesheet grid DS contract', () => {
   it('marks a dirty cell with warning tokens that carry dedicated dark-mode values', () => {
     const source = readGridSource()
 
-    // Both halves are required. The surface lands on the `<td>`; the paired
-    // foreground lands on the `DurationInput` via `inputClassName`. A warning
-    // background left with `text-muted-foreground` over it is the regression.
-    expect(source).toContain("'bg-status-warning-bg'")
+    // Both halves are required, and both must be keyed to `isDirty` — asserting
+    // the bare literal appears somewhere lets the surface be dropped from the
+    // dirty branch while the guard still passes, which is how the inherited
+    // version of this test could be satisfied without the cue existing.
+    expect(source).toMatch(/isDirty\s*\n?\s*\?\s*'bg-status-warning-bg'/)
     expect(source).toMatch(/isDirty\s*\n?\s*\?\s*'text-status-warning-text'/)
     expect(source).not.toContain('border-amber-400')
   })

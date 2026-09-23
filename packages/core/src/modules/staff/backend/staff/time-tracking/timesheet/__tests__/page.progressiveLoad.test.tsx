@@ -66,13 +66,28 @@ jest.mock('../../../../../lib/time-tracking-ui/TimesheetPeriodFooter', () => ({
   TimesheetPeriodFooter: () => null,
 }))
 jest.mock('../../../../../lib/time-tracking-ui/PeriodSelector', () => ({
-  PeriodSelector: () => null,
+  PeriodSelector: ({ onAnchorDateChange }: { onAnchorDateChange: (next: string) => void }) => (
+    <button type="button" onClick={() => onAnchorDateChange(mockNextAnchor())}>
+      change period
+    </button>
+  ),
   TimesheetFilterSelect: () => null,
 }))
 jest.mock('../../../../../lib/time-tracking-ui/TimesheetViewSwitch', () => ({
   TimesheetViewSwitch: () => null,
 }))
-jest.mock('../GridView', () => ({ GridView: () => <div data-testid="grid-view" /> }))
+jest.mock('../GridView', () => ({
+  GridView: ({ entries }: { entries: unknown[] }) => (
+    <div data-testid="grid-view" data-entry-count={entries.length} />
+  ),
+}))
+
+/** Each click lands on a NEW anchor, or the range never changes and no reload fires. */
+const mockAnchors = ['2026-01-15', '2026-03-15', '2026-05-15']
+let mockAnchorIndex = 0
+function mockNextAnchor(): string {
+  return mockAnchors[mockAnchorIndex++ % mockAnchors.length]
+}
 
 const readApiResultMock = readApiResultOrThrow as jest.MockedFunction<typeof readApiResultOrThrow>
 const useBackendChromeMock = useBackendChrome as jest.MockedFunction<typeof useBackendChrome>
@@ -125,6 +140,52 @@ function stubReads(failing: Failing = {}): void {
   })
 }
 
+/**
+ * Like `stubReads`, but every entry read parks on a promise this returns control
+ * over, so two loads can be held in flight and settled out of order.
+ */
+function stubDeferredEntries(): {
+  release: (index: number, rows: Record<string, unknown>[]) => void
+  pending: () => number
+} {
+  const gates: Array<(rows: Record<string, unknown>[]) => void> = []
+  readApiResultMock.mockImplementation(async (url: string | URL | Request) => {
+    const href = String(url)
+    if (href.startsWith('/api/staff/team-members/self')) {
+      return { member: { id: STAFF_MEMBER_ID } } as never
+    }
+    if (href.startsWith('/api/staff/timesheets/my-projects')) {
+      return { items: [{ time_project_id: PROJECT_ID, show_in_grid: true }] } as never
+    }
+    if (href.startsWith('/api/staff/timesheets/time-entries')) {
+      return new Promise((resolve) => {
+        gates.push((rows) => resolve({ items: rows, totalPages: 1 } as never))
+      }) as never
+    }
+    if (href.startsWith('/api/staff/timesheets/time-projects')) {
+      return { items: [{ id: PROJECT_ID, name: 'Apollo', code: 'APL', color: null }] } as never
+    }
+    if (href.startsWith('/api/staff/timesheets/settings')) {
+      return { targets: { dailyHours: null } } as never
+    }
+    return {} as never
+  })
+  return {
+    release: (index, rows) => gates[index]?.(rows),
+    pending: () => gates.length,
+  }
+}
+
+function entryRow(id: string): Record<string, unknown> {
+  return {
+    id,
+    date: todayIso(),
+    time_project_id: PROJECT_ID,
+    duration_minutes: 60,
+    staff_member_id: STAFF_MEMBER_ID,
+  }
+}
+
 async function renderPage(): Promise<void> {
   await act(async () => {
     render(<TimesheetPage />)
@@ -133,6 +194,7 @@ async function renderPage(): Promise<void> {
 
 beforeEach(() => {
   jest.clearAllMocks()
+  mockAnchorIndex = 0
   window.localStorage.clear()
   useBackendChromeMock.mockReturnValue({
     payload: { grantedFeatures: ['staff.timesheets.manage_own'] },
@@ -247,6 +309,78 @@ describe('timesheet progressive load', () => {
     stubReads({ entries: true })
     await act(async () => {
       await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    })
+
+    expect(screen.getByText(UNAVAILABLE_MESSAGE)).toBeInTheDocument()
+    expect(screen.queryByTestId('grid-view')).not.toBeInTheDocument()
+  })
+
+  it('ignores a superseded load that settles after the one that replaced it', async () => {
+    // `loadData` is rebuilt whenever the period or a filter changes, so two loads
+    // can be in flight — and the read timeout makes it easy for the OLDER one to
+    // be the slower. Last-writer-wins would put the previous period's entries
+    // under the current period's heading, which is exactly the symptom the
+    // failure states below exist to prevent.
+    stubReads()
+    await renderPage()
+
+    // Armed only now, so the two loads the period changes trigger both park.
+    const gate = stubDeferredEntries()
+    await act(async () => {
+      await userEvent.click(screen.getByRole('button', { name: 'change period' }))
+    })
+    await act(async () => {
+      await userEvent.click(screen.getByRole('button', { name: 'change period' }))
+    })
+    expect(gate.pending()).toBe(2)
+
+    // The newer load answers first with one entry, then the older one it
+    // superseded answers with three.
+    await act(async () => {
+      gate.release(1, [entryRow(ENTRY_ID)])
+    })
+    await act(async () => {
+      gate.release(0, [entryRow('a'), entryRow('b'), entryRow('c')])
+    })
+
+    expect(screen.getByTestId('grid-view')).toHaveAttribute('data-entry-count', '1')
+  })
+
+  it('does not let a superseded load clear the spinner of the load that replaced it', async () => {
+    stubReads()
+    await renderPage()
+
+    const gate = stubDeferredEntries()
+    await act(async () => {
+      await userEvent.click(screen.getByRole('button', { name: 'change period' }))
+    })
+    await act(async () => {
+      await userEvent.click(screen.getByRole('button', { name: 'change period' }))
+    })
+
+    // Only the older load settles; the newer one is still in flight, so the page
+    // must still read as refreshing rather than announcing itself done.
+    await act(async () => {
+      gate.release(0, [entryRow('a')])
+    })
+
+    expect(document.querySelector('.opacity-50')).not.toBeNull()
+  })
+
+  it('drops the previous period when the self read is what fails', async () => {
+    // `/self` is the one read left that can unwind the whole load, and it lands
+    // in the outer catch — which is half the fix for showing a stale period, and
+    // was the half nothing covered.
+    stubReads()
+    await renderPage()
+    expect(screen.getByTestId('grid-view')).toHaveAttribute('data-entry-count', '1')
+
+    readApiResultMock.mockImplementation(async (url: string | URL | Request) => {
+      if (String(url).startsWith('/api/staff/team-members/self')) throw new Error('self unavailable')
+      return {} as never
+    })
+    await act(async () => {
+      await userEvent.click(screen.getByRole('button', { name: 'change period' }))
     })
 
     expect(screen.getByText(UNAVAILABLE_MESSAGE)).toBeInTheDocument()

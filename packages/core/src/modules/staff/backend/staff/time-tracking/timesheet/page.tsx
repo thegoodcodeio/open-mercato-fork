@@ -227,6 +227,15 @@ export default function TimesheetPage() {
     date: todayIso(),
   })
   const hasLoadedOnceRef = React.useRef(false)
+  /**
+   * Monotonic load token. `loadData` is rebuilt whenever the period, the person
+   * or the project filter changes and the effect fires again, so two loads can be
+   * in flight at once — and the 12s read timeout means the older one can easily be
+   * the slower one. Without this, whichever settles LAST wins, which puts another
+   * period's entries on screen under the current period's heading: the very
+   * outcome the failure states below exist to prevent.
+   */
+  const loadGenerationRef = React.useRef(0)
 
   const range: TimesheetDateRange = React.useMemo(
     () => resolvePeriodRange(periodKind, anchorDate),
@@ -278,6 +287,8 @@ export default function TimesheetPage() {
   )
 
   const loadData = React.useCallback(async () => {
+    const generation = (loadGenerationRef.current += 1)
+    const isStale = () => loadGenerationRef.current !== generation
     if (hasLoadedOnceRef.current) setIsRefreshing(true)
     try {
       const selfPayload = await readApiResultWithTimeout<{ member?: { id: string } | null }>(
@@ -285,6 +296,7 @@ export default function TimesheetPage() {
         undefined,
         { errorMessage: loadError, fallback: { member: null } },
       )
+      if (isStale()) return
       const myStaffMemberId = selfPayload.member?.id ?? null
       if (!myStaffMemberId) {
         setData({ ...EMPTY_DATA, staffMemberMissing: true })
@@ -430,6 +442,7 @@ export default function TimesheetPage() {
       const dailyHours =
         typeof settingsPayload?.targets?.dailyHours === 'number' ? settingsPayload.targets.dailyHours : null
 
+      if (isStale()) return
       setData({
         staffMemberId: myStaffMemberId,
         staffMemberMissing: false,
@@ -445,6 +458,7 @@ export default function TimesheetPage() {
       setLoadFailures(failures)
       setPeriodLoaded(entriesResult.status === 'fulfilled')
     } catch (error) {
+      if (isStale()) return
       logger.error('staff.time_tracking.timesheet load failed', { err: error })
       // Nothing was verified for this period, so drop what the last one left
       // behind rather than let the footer and the views keep reporting it.
@@ -453,9 +467,13 @@ export default function TimesheetPage() {
       setPeriodLoaded(false)
       flash(loadError, 'error')
     } finally {
-      hasLoadedOnceRef.current = true
-      setIsInitialLoad(false)
-      setIsRefreshing(false)
+      // A superseded load must not drop the spinner the load that overtook it is
+      // still showing, nor claim the first load has finished on its behalf.
+      if (!isStale()) {
+        hasLoadedOnceRef.current = true
+        setIsInitialLoad(false)
+        setIsRefreshing(false)
+      }
     }
   }, [loadError, personFilter, projectFilter, range.from, range.to])
 
