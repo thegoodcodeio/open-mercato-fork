@@ -92,9 +92,8 @@ test.describe('TC-STAFF-027: Timesheets grid decimal edit save', () => {
       const saveButton = page.getByRole('button', { name: /save changes/i })
       await expect(saveButton).toBeEnabled()
       await saveButton.click()
-      await expect(page.getByRole('alertdialog', { name: /save changes/i })).toBeVisible()
-      await page.getByRole('button', { name: /^confirm$/i }).click()
       await expect(saveButton).toBeDisabled({ timeout: 30_000 })
+      await expect(page.getByRole('alertdialog')).toHaveCount(0)
 
       const listEntriesResponse = await apiRequest(
         request,

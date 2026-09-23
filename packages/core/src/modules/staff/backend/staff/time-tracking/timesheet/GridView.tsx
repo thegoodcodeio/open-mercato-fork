@@ -844,7 +844,18 @@ function DefaultGridView({
                           inputClassName={cn(
                             'text-center px-1 tabular-nums',
                             dense ? 'text-xs' : null,
-                            minutes > 0 ? 'font-semibold' : 'text-muted-foreground',
+                            // The cell behind a pending edit is tinted `status-warning-bg`.
+                            // `text-muted-foreground` still clears AA there (measured 5.95:1
+                            // in dark mode), but it reads as DE-emphasised on a surface whose
+                            // whole job is to draw the eye — the wrong signal for the one cell
+                            // the user just touched. The paired status token restores the
+                            // emphasis and takes the contrast to 10.62:1.
+                            isDirty
+                              ? 'text-status-warning-text'
+                              : minutes > 0
+                                ? 'text-foreground'
+                                : 'text-muted-foreground',
+                            minutes > 0 ? 'font-semibold' : null,
                           )}
                         />
                       )}
