@@ -395,7 +395,14 @@ function DefaultTimerBar({
         mutationPayload: stopPayload,
       })
 
-      setPersistedDescription(description.trim())
+      // The note belonged to the entry that just stopped, and it has been saved
+      // onto it by `saveRunningDescription` above. Leaving it in the field made
+      // the NEXT start send it again — `handleStart` posts `notes: description ||
+      // null` — so a fresh timer silently inherited and persisted the previous
+      // task's note. Both halves are cleared: the field, and the baseline the
+      // unsaved-edit check compares against.
+      setDescription('')
+      setPersistedDescription('')
       await activeTimer.refresh()
       onTimerStopped()
     } catch (err) {
