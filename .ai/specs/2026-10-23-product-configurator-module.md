@@ -1,7 +1,7 @@
 # Product Configurator (CPQ) Module
 
 **Date:** 2026-10-23
-**Status:** Draft (spec-only, decisions requested)
+**Status:** Draft; implementation follows the proposed defaults for Q1-Q6 until maintainers answer
 **Scope:** OSS - new package `packages/product-configurator` (module `product_configurator`), one additive service in `packages/core/src/modules/catalog`
 **Related:** PR #6749 (review of an optional vertical module: placement and data access), PR #1589 (closed window-coverings configurator spec), [`2026-09-30-forms-module-into-core.md`](./2026-09-30-forms-module-into-core.md)
 
@@ -53,6 +53,7 @@
 | Sales RBAC | Every session operation requires sales visibility of its quote; finalising requires `sales.quotes.manage` |
 | Price ownership | The configurator produces a net unit price. Sales applies tax (the bound product's `taxRateId`) and discounts through `salesCalculationService`, like any other line |
 | Currency precision | Minor-unit exponent from `Intl.NumberFormat` for the currency code, the same source `formatCurrency` uses. No `currencies` change |
+| Price kind | Fixed `commercial.priceKindId` per model in v1; a price kind from customer-group terms is not applied |
 | Quote line product | The line carries the `productId` of the catalog product the model is bound to. A product can have several models (for example one per currency) |
 | Feature visibility | Features can declare `visibleWhen` conditions. A hidden feature takes its default and is left out of the summary |
 | Configured line edits | Command interceptors protect the configuration marker and the configured inputs (product, currency, quantity, unit, net unit price). Name, comment, discount and tax are edited from the Configurations tab (the standard sales dialog cannot save a variant-less product line, Q5); gross and totals are derived by sales |
@@ -141,9 +142,10 @@ packages/product-configurator/
   package.json (version = workspace version), build.mjs, watch.mjs, jest.config.cjs, tsconfig.json
   src/modules/product_configurator/
     AGENTS.md, index.ts, acl.ts, setup.ts, events.ts, di.ts
-    data/{definition.ts, validators.ts, entities.ts}
+    data/{validators.ts, entities.ts}   definition schema, input schemas and z.infer types
     lib/evaluator/*          pure engine (no I/O)
-    lib/{validate,hash,exprParse,exprFormat,dependencyGraph,summary,money}.ts
+    lib/validation/*         publication checks
+    lib/{hash,exprParse,exprFormat,summary,money,expression,conditions,messages}.ts
     lib/{pricing,finalise,quoteAccess}.ts
     commands/{models,sessions,interceptors}.ts
     api/**                   routes (see API Contracts)
@@ -154,7 +156,7 @@ packages/product-configurator/
     __integration__/ (meta.ts with requiredEnvVars and dependsOnModules)
 ```
 
-The env-gated registration follows the merged `OM_ENABLE_STORAGE_S3` pattern: `enabledModules.push` behind the flag in `apps/mercato/src/modules.ts` and `packages/create-app/template/src/modules.ts`. A UI package also needs what `storage-s3` does not: an `apps/mercato/package.json` dependency and the same dependency in `packages/create-app/template/package.json.template` with a review of the template lockfile (`packages/create-app/AGENTS.md` rule 6), `@xyflow/react` declared in the new package's own `package.json`, commented `# OM_ENABLE_PRODUCT_CONFIGURATOR=false` in both `.env.example` files, the three Dockerfile `COPY` lines, `scripts/package-peer-deps-allowlist.json`, an error-severity `om-ds/*` block in `eslint.ds.config.mjs` (as for `tillio`), and ACL feature labels in `packages/core/src/modules/auth/i18n/*` (`auth.acl.features.product_configurator.*`). Phase A confirms whether the create-app module fact-sheet guard (`scripts/template-sync.ts`) needs a harness entry for an env-gated module.
+The env-gated registration follows the merged `OM_ENABLE_STORAGE_S3` pattern: `enabledModules.push` behind the flag in `apps/mercato/src/modules.ts` and `packages/create-app/template/src/modules.ts`. A UI package also needs what `storage-s3` does not: an `apps/mercato/package.json` dependency and the same dependency in `packages/create-app/template/package.json.template` with a review of the template lockfile (`packages/create-app/AGENTS.md` rule 6), `@xyflow/react` declared in the new package's own `package.json`, commented `# OM_ENABLE_PRODUCT_CONFIGURATOR=false` in both `.env.example` files, the three Dockerfile `COPY` lines, the package in `SYNC_INTERNAL_PACKAGE_KEYS` of `scripts/template-sync.ts`, peer dependencies declared in the package itself, an error-severity `om-ds/*` block in `eslint.ds.config.mjs` (as for `tillio`), and ACL feature labels in `packages/core/src/modules/auth/i18n/*` (`auth.acl.features.product_configurator.*`). An env-gated module needs no create-app fact-sheet harness entry (confirmed in Phase A).
 
 Entity ids of other modules are read with `getEntityIds()` from `@open-mercato/shared/lib/encryption/entityIds`, with optional chaining (`E.sales?.sales_quote`).
 
@@ -187,17 +189,18 @@ type CatalogItemRef = {
   productId: string
   variantId: string | null
   title: string
-  unit: string | null              // product: defaultSalesUnit ?? defaultUnit; variant: its product's
+  unit: string | null              // the product's base unit (defaultUnit); a variant uses its product's
   salesUnitQuantity: string        // product's defaultSalesUnitQuantity (publication needs 1)
 }
 type SkuResolution = { items: Map<string, CatalogItemRef>; ambiguous: string[] }
 type PriceKindRef = { id: string; code: string; currencyCode: string | null; isPromotion: boolean }
 
 interface CatalogPriceRowService {
-  resolveProducts(ids: string[], scope: CatalogScope): Promise<Map<string, BoundProductRef>>
-  resolveSkus(skus: string[], scope: CatalogScope): Promise<SkuResolution>
-  resolvePriceKinds(ids: string[], scope: CatalogScope): Promise<Map<string, PriceKindRef>>
+  resolveProducts(em: EntityManager, ids: string[], scope: CatalogScope): Promise<Map<string, BoundProductRef>>
+  resolveSkus(em: EntityManager, skus: string[], scope: CatalogScope): Promise<SkuResolution>
+  resolvePriceKinds(em: EntityManager, ids: string[], scope: CatalogScope): Promise<Map<string, PriceKindRef>>
   findPriceRows(
+    em: EntityManager,
     items: CatalogItemRef[],
     context: PricingContext,
     scope: CatalogScope,
@@ -206,6 +209,9 @@ interface CatalogPriceRowService {
 }
 ```
 
+- Every method takes the caller's `EntityManager` first, like `catalogScopedProductService.loadScopedProducts` and `catalogBuyerPricingService`, and filters by tenant and organization in its queries.
+- `unit` is the base unit because catalog price tiers are quantities in the base unit (`catalog/api/prices/route.ts` converts to `defaultUnit` before matching tiers).
+- A variant's `title` is the variant name, or the product title when the variant has none. A variant whose product is soft-deleted is not resolved; inactive products are resolved. `findPriceRows` drops rows whose price kind is deleted or inactive.
 - `resolvePriceKinds` backs the `price_kind` publication check and the create dialog's price kind picker. It includes price kinds with no organization (`catalog_price_kinds.organization_id` is nullable, `catalog/data/entities.ts:743`). Variants have no unit column, so a variant item carries its product's unit and sales unit quantity.
 - `resolveProducts` returns the bound product even when it has no SKU (`CatalogProduct.sku` is nullable, `catalog/data/entities.ts:101`). `resolveSkus` matches products and variants by SKU and carries the item's unit (`catalog/data/entities.ts:122`). Both exclude soft-deleted rows. Product and variant SKUs are unique in separate tables (`catalog/data/entities.ts:66,550-553`), so a SKU found in both is returned in `ambiguous`.
 - `findPriceRows` uses `findWithDecryption` with `buildPriceRowFilter(context)` and populates price kind and offer. A product item gets product-level rows only (`variant_id IS NULL`). A variant item gets its product's product-level rows plus its own variant rows, narrowed with the existing `filterRowsForVariant` (`catalog/lib/pricing.ts:57-61`, as `cart` reprices variant lines), so a variant without its own row falls back to its product's price and a sibling variant's row never applies. This fixes the hackathon bug where a variant price could win for a product SKU. `excludePromotions` drops `isPromotion` price kinds inside catalog, because `buildPriceRowFilter` admits them when `priceKindId` is set.
@@ -214,7 +220,7 @@ interface CatalogPriceRowService {
 ### Pricing
 
 1. The structure step returns BOM lines with SKUs and quantities.
-2. Quantities are summed per SKU. This is safe because publication rejects a BOM line whose `uom` differs from the catalog item's unit, or an item whose `defaultSalesUnitQuantity` is not 1 (`bom_unit_mismatch`); unit conversion is not supported in v1. One `PricingContext` per SKU: `currencyCode` = model currency, `priceKindId` = `commercial.priceKindId`, `channelId` = quote channel, `customerId` and `customerIds` = quote customer when present, `customerGroupIds` = what `resolveGroups` returns for the quote customer at the evaluation date (see Cross-module seams). The service is called whenever it is registered, also with no customer: it then returns the tenant default group, as it does for a customer without memberships, so configured lines price like the storefront and cart do; `at` filters membership validity. Only a disabled `customer_groups` gives `[]`. `quantity` = total SKU quantity, `date` = evaluation time. The quantity-independent part of this context is shared by `findPriceRows` (row fetching, `buildPriceRowFilter` ignores quantity) and the per-SKU contexts go to `resolvePriceMany` (selection); both carry `customerGroupIds`, because `catalog/lib/pricing.ts` drops group rows when they are missing.
+2. Quantities are summed per SKU. This is safe because publication rejects a BOM line whose `uom` differs from the catalog item's base unit (`defaultUnit`), or an item whose `defaultSalesUnitQuantity` is not 1 (`bom_unit_mismatch`); unit conversion is not supported in v1. One `PricingContext` per SKU: `currencyCode` = model currency, `priceKindId` = `commercial.priceKindId`, `channelId` = quote channel, `customerId` and `customerIds` = quote customer when present, `customerGroupIds` = what `resolveGroups` returns for the quote customer at the evaluation date (see Cross-module seams). The service is called whenever it is registered, also with no customer: it then returns the tenant default group, as it does for a customer without memberships, so group price rows apply as they do elsewhere; `at` filters membership validity. Only a disabled `customer_groups` gives `[]`. `quantity` = total SKU quantity, used as `max(1, total)` to pick the price tier because a row's `minQuantity` defaults to 1 and a total such as 0.5 m would match no row (`catalog/lib/pricing.ts:102`); the line total still uses the real quantity. `date` = evaluation time. The price kind is always `commercial.priceKindId` in v1: a price kind from customer-group terms is not applied, unlike the storefront, which takes it from the group terms first (`ecommerce/lib/buyerContext.ts:291-305`). The quantity-independent part of this context is shared by `findPriceRows` (row fetching, `buildPriceRowFilter` ignores quantity) and the per-SKU contexts go to `resolvePriceMany` (selection); both carry `customerGroupIds`, because `catalog/lib/pricing.ts` drops group rows when they are missing.
 3. `findPriceRows` and `resolvePriceMany` select one unit price per SKU. Promotions are excluded unless `commercial.allowPromotions` is true. A SKU with no row or a null `unitPriceNet` fails with `price_missing`.
 4. The price step multiplies each BOM line by the SKU unit price.
 
@@ -363,6 +369,7 @@ Events are emitted from commands after commit. None are `clientBroadcast` in v1.
 
 `schemaVersion: 1`. The definition is tenant data. Authored labels and messages are model content, not UI strings.
 
+- **Keys**: feature, formula and lookup keys match `^[A-Za-z_][A-Za-z0-9_]*$` (at most 64 characters) and must not be a name inherited from `Object.prototype` (`constructor`, `toString`, `__proto__` and the like), which fails `schema` with reason `reserved_key`. Option values and SKUs stay free text, so `map` tables and unit prices are read as own properties only.
 - **`commercial`**: `currencyCode` (ISO 4217), `priceKindId` (uuid), `allowPromotions` (boolean, default false), `priceDisclaimer?`. Both `currencyCode` and `priceKindId` are chosen in the create dialog; there are no hidden defaults.
 - **`fixedSpecification[]`**: `{ label, value }`, display only.
 - **`features[]`**: `key`, `label`, `type: 'choice' | 'boolean' | 'number' | 'color'`, `options?: { value, label, order, swatch? }[]`, `optionsFromLookup?: lookupKey` (a `permitted` lookup), `min?`, `max?`, `step?`, `unit?`, `group?`, `default`, `order`, `inSummary` (replaces the hackathon `drivesGeometry`), `visibleWhen?: Condition[]`. `color` is a choice whose options carry a `swatch` validated as `#RRGGBB`.
@@ -380,7 +387,7 @@ Events are emitted from commands after commit. None are `clientBroadcast` in v1.
 
 ### Limits
 
-Enforced by the zod schema and the evaluate route: at most 200 features, 500 rules, 100 formulas, 100 lookups with 1000 rows each, 500 BOM lines, 50 conditions per rule; a definition of at most 512 KB; an evaluate request of at most 64 KB.
+Enforced by the zod schema and the evaluate route: at most 200 features, 500 rules, 100 formulas, 100 lookups with 1000 rows each, 500 BOM lines, 50 conditions per rule; a definition of at most 512 KB; an evaluate request of at most 64 KB; expression nesting of at most 32 levels and JSON nesting of at most 64 levels, checked before any recursive step so deep input returns 422, never a stack overflow.
 
 ### Evaluator contract
 
@@ -398,7 +405,7 @@ Enforced by the zod schema and the evaluate route: at most 200 features, 500 rul
 
 ### Publication checks
 
-`schema`, `limits`, `lookup_coverage` (every option of a choice, color or boolean feature used as `keyedBy` by `skuFromLookup` or `optionsFromLookup` has a row), `duplicate_key` (features, formulas, lookups, BOM ids, rule ids), `referential_integrity` (SKUs and the bound product through `catalogPriceRowService`), `ambiguous_sku`, `bom_unit_mismatch`, `formula_cycle`, `fixed_point` (including reads through `calculated` and `visibleWhen` conditions), `numeric_expr_reference`, `default_valid` (defaults inside options and bounds), `surcharge_binding` (a surcharge rule bound to at most one BOM line), `placeholder_reference`, `price_kind`. Each issue is `{ check, code, params, refs }` with an i18n message key.
+`schema`, `limits`, `lookup_coverage` (every option of a choice, color or boolean feature used as `keyedBy` by `skuFromLookup`, `optionsFromLookup`, or a `value` lookup read by a formula or a `{lookup.<key>}` placeholder has a row), `duplicate_key` (features, formulas, lookups, BOM ids, rule ids), `referential_integrity` (SKUs and the bound product through `catalogPriceRowService`), `ambiguous_sku`, `bom_unit_mismatch`, `formula_cycle`, `fixed_point` (including reads through `calculated` and `visibleWhen` conditions), `numeric_expr_reference`, `default_valid` (defaults inside options and bounds), `surcharge_binding` (a surcharge rule bound to at most one BOM line), `placeholder_reference`, `price_kind`. Each issue is `{ check, code, params, refs }` with an i18n message key. Additional codes from Phase A: `lookup_keyed_by_mismatch` (under `referential_integrity`: a condition, action, `skuFromLookup` or `optionsFromLookup` must use the lookup's own `keyedBy`), `placeholder_malformed` and the rule that `{line.<bomId>.total}` is allowed only in the surcharge rule bound to that BOM line (under `placeholder_reference`), `expression_too_deep` and `definition_too_deep` (under `limits`), `bom_unit_missing` and `bom_sales_unit_quantity` (under `bom_unit_mismatch`), and `bom_negative_quantity` (a static negative quantity fails `schema`; a formula quantity that evaluates negative is a blocking evaluation error). `fixed_point` reuses the evaluator's settle step over the features that `force` rules and `visibleWhen` read and write (exhaustive up to 512 combinations, sampled above).
 
 ## Data Models
 
@@ -475,12 +482,12 @@ All routes live under `/api/product_configurator/`, export `openApi`, and scope 
 
 | Method + path | Feature | Request -> Response | Errors |
 |---|---|---|---|
-| `GET /models` | `models.view` | `page`, `pageSize` (max 100), `search`, `productId`, `published`, `currencyCode`, `sortField` (`title`, `modelKey`, `updatedAt`), `sortDir` -> items with `updatedAt`, latest version, unpublished-changes flag, no definition (one grouped query, no N+1); `id` -> detail with `draftDefinition`, `title`, `modelKey`, `productId`, `updatedAt` for the studio | 404 |
+| `GET /models` | `models.view` | Lists the selected organization only (child organizations are not included, the same scope that writes use; with "all organizations" the automatic organization scope applies). `page`, `pageSize` (max 100), `search`, `productId`, `published`, `currencyCode`, `sortField` (`title`, `modelKey`, `updatedAt`), `sortDir` -> items with `updatedAt`, latest version, unpublished-changes flag, no definition (one grouped query, no N+1); `id` -> detail with `draftDefinition`, `title`, `modelKey`, `productId`, `updatedAt` for the studio | 404 |
 | `POST /models` | `models.manage` | `{ productId, modelKey, title, currencyCode, priceKindId, draftDefinition? }` (empty skeleton with these commercial values when omitted) -> `{ id }` | 409 `duplicate_model_key` |
-| `PUT /models` | `models.manage` | `{ id, title?, draftDefinition? }` + lock header -> `{ id, updatedAt }` | 400 `invalid_definition`, 409 lock |
+| `PUT /models` | `models.manage` | `{ id, title?, draftDefinition? }` + lock header -> `{ id, updatedAt }` | 400 `invalid_definition` (only over 512 KB, nested too deep, or a `commercial.currencyCode` different from the model; the price kind is matched against the draft on create only; other problems are reported by validate and block publish), 409 lock |
 | `DELETE /models` | `models.manage` | `{ id }` + lock header | 409 lock |
-| `POST /models/validate` | `models.manage` | `{ id }` -> validation report | 404 |
-| `POST /models/publish` | `models.manage` | `{ id }` + lock header -> `{ modelVersionId, version, hash }` | 422 `validation_failed`, 409 lock |
+| `POST /models/validate` | `models.manage` + `catalog.products.view` | `{ id }` -> validation report (read-only, so no mutation guards) | 404 |
+| `POST /models/publish` | `models.manage` + `catalog.products.view` | `{ id }` + lock header -> `{ modelVersionId, version, hash }`. The row is locked and the lock header is checked again against the locked row, so a title edit or another publish in between is a 409 | 422 `validation_failed`, 409 lock, 409 `draft_changed` |
 | `GET /model-versions` | `models.view` | `modelId` -> versions without definition; `id` -> one version with definition | 404 |
 | `GET /sessions` | see Access control | `id` or `quoteId` -> `{ id, status, mode, revision, quoteId, quote: { number, customerName }, modelVersion, selections, evaluation, sourceSnapshotId, migration, createdBy: { id, displayName }, createdAt }` | 404 |
 | `POST /sessions` | see Access control | `{ quoteId, modelId?, fromSnapshotId?, mode? }` -> `{ sessionId, revision, modelVersion, quote: { id, number, customerName }, migration? }` | 404, 400 `mode_not_supported`, 409 `currency_mismatch`, 409 `no_published_version`, 409 `model_required` (with candidate ids), 422 `snapshot_not_in_quote` |
@@ -489,7 +496,7 @@ All routes live under `/api/product_configurator/`, export `openApi`, and scope 
 | `POST /sessions/finalise` | see Access control | `{ id, expectedHash, revision, migrationAcknowledged? }` -> `{ snapshotId, quoteLineId, hash, replay }` | 409 `result_changed` (with the new result), 409 `session_changed`, 409 `session_not_open` (discarded or cancelled; a finalised session returns its stored result with `replay: true`), 422 `migration_unconfirmed`, 409 `finalise_in_progress`, 409 `quote_changed` (quote edited after step 3), 409 `quote_converted` (quote converted or deleted), 409 `currency_mismatch`, 409 `model_deleted`, 422 `not_finalisable`, 422 `product_missing`, 422 `price_missing`, 422 `expression_error`, 422 `fixed_point_not_reached`, 502 `quote_line_write_failed` |
 | `POST /lines/update` | `sessions.manage` + `sales.quotes.manage` | `{ quoteId, lineId, name?, comment?, discount?: { mode: 'percent' \| 'amount' \| 'none', value? }, taxRateId? }` + quote lock header -> `{ lineId, updatedAt }` | 404, 409 lock, 422 `not_a_configured_line` |
 | `POST /models/preview` | `models.manage` | `{ id, selections, context?: { channelId?, customerId?, date? } }` -> evaluation of the saved draft priced from the catalog for the given context (or a labelled reference context), plus `trace: { firedRules: [{ ruleId, label, effect }] }`; customer groups are resolved server-side for `context.customerId` at `context.date` in the same way; no session, no finalise | 404, 422 evaluation errors |
-| `GET /catalog-items` | `models.manage` | `skus` (comma-separated, max 100) -> `{ items: [{ sku, title, unit }], unknown[], ambiguous[] }` through `catalogPriceRowService.resolveSkus`, so the studio shows catalog titles and units and marks unknown or ambiguous SKUs while a row is edited | 400 over the limit |
+| `GET /catalog-items` | `models.manage` + `catalog.products.view` | `skus` (comma-separated, max 100) -> `{ items: [{ sku, title, unit }], unknown[], ambiguous[] }` through `catalogPriceRowService.resolveSkus`, so the studio shows catalog titles and units and marks unknown or ambiguous SKUs while a row is edited | 400 over the limit |
 | `GET /snapshots` | see Access control | `quoteId`, `orderId`, `ids` (max 100) or `id` -> snapshot read model (below) | 404 |
 
 Snapshot read model: `id`, `sessionId`, `quoteId`, `quoteLineId`, `lineState`, `lineName` (name of the document line that carries the snapshot, read through `queryEngine`; null when the line is gone, and the UI then shows `modelTitle`), `modelTitle`, `modelVersion { id, version, hash }`, `summary`, `selectionRows[{ label, value, unit }]` (visible features), `calculatedRows[{ label, value, unit }]` (labelled formulas), `specification[{ label, value }]`, `bom[{ sku, label, quantity, uom, unitPrice, total }]`, `netPrice`, `currencyCode`, `warnings[{ ruleId, message }]`, `hash`, `createdAt`. `orderId` reads the order's lines and returns the snapshots they reference.
@@ -504,9 +511,11 @@ No caching in v1. Every read goes to the database. Each read is bounded: lists b
 
 `acl.ts`: `product_configurator.models.view`, `product_configurator.models.manage` (depends on view), `product_configurator.sessions.manage`, `product_configurator.snapshots.view`.
 
+Routes that read catalog data also need `catalog.products.view`: `POST /models/validate` and `POST /models/publish` (the report reveals which SKUs exist and their catalog units), `GET /catalog-items` and `POST /models/preview`.
+
 `setup.ts` `defaultRoleFeatures`: `superadmin` and `admin` get `product_configurator.*`. `employee` gets `product_configurator.sessions.manage`, `product_configurator.models.view` and `product_configurator.snapshots.view`, matching the sales quote features employees already hold (`sales/setup.ts:60-61`). Existing tenants pick these up with `yarn mercato auth sync-role-acls`. No demo roles and no `seedDefaults` users.
 
-`seedExamples` creates one neutral reference model with its catalog products and prices through catalog commands. Integration tests never depend on it.
+`seedExamples` creates one neutral reference model with its catalog products and prices through catalog commands. It reads the `regular` price kind through `queryEngine` on `E.catalog.catalog_price_kind` and can run again after a partial failure: missing products and prices are created, and a reference model without a published version is published. Integration tests never depend on it.
 
 ## Internationalization (i18n)
 
@@ -669,9 +678,9 @@ No provider is added at page or app root. Budgets: 0 new page-root `"use client"
 3. DSL types and zod schema with limits, evaluator (structure and price steps) with scaled BigInt money and currency exponent, hash contract. Proved by evaluator unit tests with golden values.
 4. Publication checks and their i18n codes. Proved by `TC-PCFG-002`.
 5. Entities `ConfigurationModel`, `ConfigurationModelVersion`, one migration. Proved by `TC-PCFG-007`.
-6. Model commands (create, update, delete, publish) with audit, undo, optimistic lock, events. Model routes, validate route and `GET /catalog-items`, organization scoping. Proved by `TC-PCFG-001`, `-003`, `-004`, `-006`, `-008`.
+6. Model commands (create, update, delete, publish) with audit, undo, optimistic lock, events. Model routes, validate route and `GET /catalog-items`, organization scoping. Proved by `TC-PCFG-001`, `-003`, `-004`, `-006`, `-008`, `-009`.
 7. ACL with labels, `setup.ts`, `seedExamples`, i18n for all locales. Proved by `TC-PCFG-005`.
-8. Golden values on the neutral reference model, computed independently, including a 0-decimal (JPY) and a 3-decimal currency, sub-cent catalog prices, a repeated SKU across a tier boundary, a `force` rule reading a `calculated` condition, a hidden feature, a BOM part with a customer-group price for the quote customer's group, and a variant priced from its product's row.
+8. Golden values on the neutral reference model, computed independently, including a 0-decimal (JPY) and a 3-decimal currency, sub-cent catalog prices, a repeated SKU across a tier boundary, a `force` rule reading a `calculated` condition, a hidden feature, and the summary rules (order, units, booleans only when true, cut at 1000 characters). Golden values that need catalog price selection move to Phase C step 3.
 
 ### Phase B: Studio (PR B)
 1. Models list and create dialog. Proved by `TC-PCFG-010`.
@@ -681,7 +690,7 @@ No provider is added at page or app root. Budgets: 0 new page-root `"use client"
 ### Phase C: Configure and add to quote (PR C)
 1. `ConfigurationSession` and `ConfigurationSnapshot` entities, one migration.
 2. Session commands and routes (open without `fromSnapshotId`, evaluate, cancel, get), sales RBAC checks, selected-organization scoping, currency check, model candidates. Proved by `TC-PCFG-020` to `-028`.
-3. Pricing through `catalogPriceRowService` and `catalogPricingService`. Proved by `TC-PCFG-020`, `-027`.
+3. Pricing through `catalogPriceRowService` and `catalogPricingService`, with golden values for a BOM part with a customer-group price for the quote customer's group, a variant priced from its product's row, and a 0.5 m total priced from the first tier. Proved by `TC-PCFG-020`, `-027`.
 4. Configurator workspace with error states, layout and accessibility, session revision, and quote tab (configure, picker, resume, discard, configured lines). Proved by `TC-PCFG-018`, `-019`, `-029`, `-051`, `-061`.
 5. `POST /models/preview` and the studio Test tab. Proved by `TC-PCFG-017`.
 6. Finalise command (advisory lock, reconcile-first recovery including order lines, revision and `expectedHash` checks, trusted line write), sales RBAC on finalise, events, logging and error reporting, conversion cleanup. Proved by `TC-PCFG-030` to `-033`, `-039`, `-040`, `-042`, `-050`, `-051`, `-056`, `-060`, `-062` and finalise unit tests.
@@ -691,7 +700,7 @@ No provider is added at page or app root. Budgets: 0 new page-root `"use client"
 1. `source_snapshot_id` on sessions, one migration; `fromSnapshotId` with `duplicate` as the default mode.
 2. "Add another identical" and "Configure again" with selection migration and the copy review. Proved by `TC-PCFG-041`, `-053`, `-054`, `-057`, `-059`.
 3. Edit of a configured line's commercial fields and the configured-lines notice. Proved by `TC-PCFG-048`, `-055`, `-058`.
-4. Order tab, order items column, snapshot access from the order. Proved by `TC-PCFG-038`, `-044`, `-046`, `-063`.
+4. Order tab, order items column, snapshot access from the order. Proved by `TC-PCFG-038`, `-044`, `-046`, `-063`, `-064`.
 
 ### Integration coverage
 
@@ -699,10 +708,10 @@ Tests live in `src/modules/product_configurator/__integration__/` with `meta.ts`
 
 | Phase | API paths | UI paths |
 |---|---|---|
-| A | `TC-PCFG-001` create, update, delete model; stale `updatedAt` -> 409. `TC-PCFG-002` validate a broken model (cycle, unknown SKU, ambiguous SKU, bad default, non-settling rules, duplicate key, over limits, BOM unit different from the catalog unit, lookup without a row for an option) -> right codes. `TC-PCFG-003` publish creates version 1, then 2; versions read-only; draft edit keeps the model selectable. `TC-PCFG-004` cross-organization and cross-tenant reads -> 404; "all organizations" on validate and publish -> 400. `TC-PCFG-005` each feature gates its routes. `TC-PCFG-006` a registered mutation guard blocks publish. `TC-PCFG-007` module enabled on a fresh database: migrations apply and `GET /models` answers. `TC-PCFG-008` `GET /catalog-items` returns titles and units, lists unknown and ambiguous SKUs, stays in the selected organization and rejects more than 100 SKUs | - |
+| A | `TC-PCFG-001` create, update, delete model; stale `updatedAt` -> 409. `TC-PCFG-002` validate a broken model (cycle, unknown SKU, ambiguous SKU, bad default, non-settling rules, duplicate key, over limits, BOM unit different from the catalog unit, lookup without a row for an option) -> right codes. `TC-PCFG-003` publish creates version 1, then 2; versions read-only; draft edit keeps the model selectable. `TC-PCFG-004` cross-organization and cross-tenant reads and writes -> 404 (a second tenant with its own admin is created through the directory APIs); a superadmin acting in that tenant through the tenant cookie reaches its model; "all organizations" on validate and publish -> 400. `TC-PCFG-005` each feature gates its routes. `TC-PCFG-006` a registered mutation guard blocks publish. `TC-PCFG-007` module enabled on a fresh database: migrations apply and `GET /models` answers. `TC-PCFG-008` `GET /catalog-items` returns titles and units, lists unknown and ambiguous SKUs, stays in the selected organization and rejects more than 100 SKUs. `TC-PCFG-009` `GET /catalog-items`, `POST /models/validate`, `POST /models/publish` and `POST /models/preview` without `catalog.products.view` -> 403 | - |
 | B | covered by A | `TC-PCFG-010` build the reference model from a blank model through the UI only and publish; canonical comparison with the fixture. `TC-PCFG-011` formula parse error shown inline. `TC-PCFG-012` conflict bar on concurrent edit. `TC-PCFG-013` published version page renders. `TC-PCFG-014` hydration smoke test of the models list, studio and version page. `TC-PCFG-015` save a draft, reload the studio, keep editing, then publish. `TC-PCFG-016` conflict refresh asks for confirmation and offers a copy of the local draft; discard restores the last saved draft |
 | C | `TC-PCFG-020` open, evaluate golden scenarios, prices match, including a BOM part with a price for a customer group that the quote customer belongs to (fixtures create the group and membership through `/api/customer-groups`); a unit test of the configurator's `lib/pricing.ts` with `customerGroupsService` not registered prices with `customerGroupIds: []`. `TC-PCFG-021` currency mismatch -> 409. `TC-PCFG-022` two models and no `modelId` -> `model_required`, then open with `modelId`. `TC-PCFG-023` invalid selection -> 422; a value outside the permitted lookup row sent straight to the API -> blocking `option_not_available`; a lookup gap -> blocking `bom_sku_unmapped`. `TC-PCFG-024` selected organization switch changes visible data. `TC-PCFG-025` user without `sales.quotes.view` -> 403 on open, evaluate and get. `TC-PCFG-026` cancel; evaluate after cancel -> 409. `TC-PCFG-027` channel price wins over base price. `TC-PCFG-028` another rep resumes a session; revoked sales access blocks it. `TC-PCFG-051` stale revision on evaluate and on finalise -> `session_changed`. `TC-PCFG-030` finalise writes a line with `productId`, net price, `taxRateId`, `configuration`; sales computes gross; also for a model bound to a product without SKU. `TC-PCFG-031` replay is idempotent. `TC-PCFG-032` failed line write leaves the session reopenable. `TC-PCFG-033` quote converted between open and finalise -> `quote_converted`, session cancelled, no line; quote edited between steps 3 and 5 -> `quote_changed`, session open. `TC-PCFG-035` on a configured quote line: net price, quantity, UOM, product, marker, or an explicit `taxAmount` / `totalGrossAmount` change -> 409; discount, tax and name change succeed; an earlier interceptor's `modifiedInput` cannot bypass the guard. `TC-PCFG-036` same guard on order lines after conversion. `TC-PCFG-037` forged marker on line insert (including one that references a real pending snapshot), on an update of a plain line, and on inline quote and order create -> 422. `TC-PCFG-039` user without `sales.quotes.manage` cannot finalise. `TC-PCFG-040` finalise on a deleted model -> `model_deleted`. `TC-PCFG-042` a registered mutation guard blocks finalise. `TC-PCFG-043` snapshot routes by `quoteId` and `id` gated as specified; cross-organization reads -> 404. `TC-PCFG-050` catalog price changed after the last evaluate -> `result_changed`, no line; confirm then succeeds. `TC-PCFG-056` converting a quote cancels its open sessions. `TC-PCFG-060` finalise of a discarded session -> `session_not_open`, no line. `TC-PCFG-062` convert, then finalise -> `quote_converted`, no line; finalise, then convert -> the order carries the configured line. Unit: crash after sales commit then retry adopts the line without re-evaluating, also with changed prices and a deleted model; crash after sales commit then conversion: the hook adopts the order line and finalises the session; a second finalise on the same quote is refused while the lock is held; against a real database, a conversion holding the quote row lock makes a concurrent configured line insert fail with nothing on the order; a reconcile read past 20 and 100 lines finds the committed line | `TC-PCFG-029` configure from the quote tab, hidden features appear when their condition holds, refresh restores state, forced values and blocking errors visible. `TC-PCFG-019` hydration smoke test of the configure page and quote tab. `TC-PCFG-017` studio Test tab evaluates the saved draft with a chosen context, without creating a session. `TC-PCFG-018` deterministic errors show their own state (no Retry); keyboard and live-region behaviour of the workspace. `TC-PCFG-061` the primary action stays disabled while a number field holds invalid text. `TC-PCFG-047` snapshot page renders the read model. `TC-PCFG-045` hydration smoke test of the snapshot page. |
-| D | `TC-PCFG-038` convert to order keeps `configuration`; order tab finds the snapshot. `TC-PCFG-041` `fromSnapshotId` of another quote -> 422; `mode: 'replace'` -> 400 `mode_not_supported`. `TC-PCFG-063` an order-only user opens a snapshot from the order tab; with `id`, the order must carry it. `TC-PCFG-053` "Add another identical" across model versions returns `migration` and finalise needs `migrationAcknowledged`. `TC-PCFG-054` "Add another identical" adds a separate, re-priced line with new-line defaults and leaves the source line. `TC-PCFG-055` `POST /lines/update` changes name, comment, discount (percent to amount to none) and tax (gross recomputed) and rejects a non-configured line. `TC-PCFG-059` "Configure again" on a removed line adds a new line. | `TC-PCFG-044` quote -> configure -> finalise -> send -> accept -> order tab links the snapshot. `TC-PCFG-046` hydration smoke test of the order tab. `TC-PCFG-048` edit a configured line's name, comment, discount and tax from the Configurations tab; quantity and price are not offered. `TC-PCFG-057` "Add another identical" across model versions shows the copy review. `TC-PCFG-058` the quote shows the configured-lines notice below the totals. |
+| D | `TC-PCFG-038` convert to order keeps `configuration`; order tab finds the snapshot. `TC-PCFG-041` `fromSnapshotId` of another quote -> 422; `mode: 'replace'` -> 400 `mode_not_supported`. `TC-PCFG-063` an order-only user opens a snapshot from the order tab; with `id`, the order must carry it. `TC-PCFG-053` "Add another identical" across model versions returns `migration` and finalise needs `migrationAcknowledged`. `TC-PCFG-054` "Add another identical" adds a separate, re-priced line with new-line defaults and leaves the source line. `TC-PCFG-055` `POST /lines/update` changes name, comment, discount (percent to amount to none) and tax (gross recomputed) and rejects a non-configured line. `TC-PCFG-059` "Configure again" on a removed line adds a new line. | `TC-PCFG-044` quote -> configure -> finalise -> send -> accept -> order tab links the snapshot. `TC-PCFG-046` hydration smoke test of the order tab. `TC-PCFG-048` edit a configured line's name, comment, discount and tax from the Configurations tab; quantity and price are not offered. `TC-PCFG-057` "Add another identical" across model versions shows the copy review. `TC-PCFG-058` the quote shows the configured-lines notice below the totals. `TC-PCFG-064` the order items table shows the "Configured" column with a link to the snapshot. |
 
 ## Risks & Impact Review
 
@@ -868,6 +877,10 @@ Findings of eleven review rounds applied; pending maintainer answers to Q1-Q6. N
 
 ## Changelog
 
+### 2026-11-05
+- Internal review of Phase A applied: model update and delete row-lock the model and check `updatedAt` against the locked row inside one transaction (undo snapshot taken in it); publish checks the lock header again against the locked row; custom routes take the tenant from the resolved organization scope like `makeCrudRoute`; `GET /models` lists the selected organization only; validate and publish need `catalog.products.view`; definition keys inherited from `Object.prototype` are rejected (`reserved_key`); the seed reads the price kind through `queryEngine` and can run again after a partial failure; the migration has `down()`; `TC-PCFG-004` covers a second tenant; the `PUT /models` row matches the code (price kind is checked on create only); golden values that need catalog price selection moved to Phase C.
+- Pre-implementation audit against current main: `catalogPriceRowService` methods take the caller's `EntityManager`; `unit` is the base unit (`defaultUnit`) that price tiers use; a total below 1 picks the first tier through `max(1, total)`; the price kind stays the model's `commercial.priceKindId` (customer-group terms price kind not applied, recorded as a decision); implementation follows the proposed Q1-Q6 defaults until maintainers answer; tests added for catalog permission on catalog items and preview, summary rules and the order items column.
+
 ### 2026-10-30
 - Applied maintainer re-review: re-configure in place (former Phase E) removed from this spec and proposed as a follow-up spec (Q6); "Add to quote" (snapshots, finalise, line guard, snapshot page, conversion cleanup) moved into Phase C so every phase is usable; Phase D now covers copies, line edits, the configured-lines notice and the order surfaces; tests, migrations and risks re-assigned.
 
@@ -991,3 +1004,22 @@ Findings of eleven review rounds applied; pending maintainer answers to Q1-Q6. N
 - **Commands**: No findings
 - **Risks**: Phase E bundled without a scope decision; Phase C not usable on its own (fixed: Q6 and a follow-up spec; finalise moved into Phase C)
 - **Verdict**: Needs revision (applied)
+
+## Implementation Status
+
+| Phase | Status | Date | Notes |
+|-------|--------|------|-------|
+| Phase A — Engine | Done | 2026-11-05 | All steps implemented, internal review fixes applied; 184 package unit tests, catalog service tests; TC-PCFG-001..005, 007..009 pass; TC-PCFG-006 needs a registered mutation guard and skips without enterprise `record_locks`; migration `down()` checked up/down/up on a local database in a rolled-back scratch schema (TC-PCFG-007 only proves `up`) |
+| Phase B — Studio | Not Started | — | — |
+| Phase C — Configure and add to quote | Not Started | — | — |
+| Phase D — Configured lines on quotes and orders | Not Started | — | — |
+
+### Phase A — Detailed Progress
+- [x] Step 1: `catalogPriceRowService` with unit tests
+- [x] Step 2: package scaffold and opt-in wiring
+- [x] Step 3: DSL, evaluator, money, hash
+- [x] Step 4: publication checks and i18n codes
+- [x] Step 5: entities and migration
+- [x] Step 6: model commands, routes, validate, publish, catalog items
+- [x] Step 7: ACL, setup, seedExamples (reference telehandler model), i18n
+- [x] Step 8: golden values (the customer-group, variant-from-product and 0.5 m tier cases moved to Phase C step 3)
