@@ -8,6 +8,7 @@ import { DefaultCatalogPricingService, type CatalogPricingService } from './serv
 import { DefaultCatalogOmnibusService } from './services/catalogOmnibusService'
 import { DefaultCatalogBuyerPricingService } from './services/catalogBuyerPricingService'
 import { DefaultCatalogScopedProductService } from './services/catalogScopedProductService'
+import { DefaultCatalogPriceRowService } from './services/catalogPriceRowService'
 import { CatalogProduct, CatalogProductPrice, CatalogProductVariant } from './data/entities'
 import { catalogProductScopeKeysEnricher } from './lib/productScopeKeys'
 
@@ -50,6 +51,9 @@ export function register(container: AppContainer) {
       .singleton()
       .proxy(),
     catalogScopedProductService: asFunction(() => new DefaultCatalogScopedProductService())
+      .singleton()
+      .proxy(),
+    catalogPriceRowService: asFunction(() => new DefaultCatalogPriceRowService())
       .singleton()
       .proxy(),
     CatalogProduct: asValue(CatalogProduct),
