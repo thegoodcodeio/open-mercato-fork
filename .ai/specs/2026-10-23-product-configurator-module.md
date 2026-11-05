@@ -487,7 +487,7 @@ All routes live under `/api/product_configurator/`, export `openApi`, and scope 
 | `PUT /models` | `models.manage` | `{ id, title?, draftDefinition? }` + lock header -> `{ id, updatedAt }` | 400 `invalid_definition` (only over 512 KB, nested too deep, or a `commercial.currencyCode` different from the model; the price kind is matched against the draft on create only; other problems are reported by validate and block publish), 409 lock |
 | `DELETE /models` | `models.manage` | `{ id }` + lock header | 409 lock |
 | `POST /models/validate` | `models.manage` + `catalog.products.view` | `{ id }` -> validation report (read-only, so no mutation guards) | 404 |
-| `POST /models/publish` | `models.manage` + `catalog.products.view` | `{ id }` + lock header -> `{ modelVersionId, version, hash }`. The row is locked and the lock header is checked again against the locked row, so a title edit or another publish in between is a 409 | 422 `validation_failed`, 409 lock, 409 `draft_changed` |
+| `POST /models/publish` | `models.manage` + `catalog.products.view` | `{ id }` + lock header -> `{ modelVersionId, version, hash, updatedAt }` (`updatedAt` is the new lock token of the model). The row is locked and the lock header is checked again against the locked row, so a title edit or another publish in between is a 409 | 422 `validation_failed`, 409 lock, 409 `draft_changed` |
 | `GET /model-versions` | `models.view` | `modelId` -> versions without definition; `id` -> one version with definition | 404 |
 | `GET /sessions` | see Access control | `id` or `quoteId` -> `{ id, status, mode, revision, quoteId, quote: { number, customerName }, modelVersion, selections, evaluation, sourceSnapshotId, migration, createdBy: { id, displayName }, createdAt }` | 404 |
 | `POST /sessions` | see Access control | `{ quoteId, modelId?, fromSnapshotId?, mode? }` -> `{ sessionId, revision, modelVersion, quote: { id, number, customerName }, migration? }` | 404, 400 `mode_not_supported`, 409 `currency_mismatch`, 409 `no_published_version`, 409 `model_required` (with candidate ids), 422 `snapshot_not_in_quote` |
@@ -1009,7 +1009,7 @@ Findings of eleven review rounds applied; pending maintainer answers to Q1-Q6. N
 
 | Phase | Status | Date | Notes |
 |-------|--------|------|-------|
-| Phase A — Engine | Done | 2026-11-05 | All steps implemented, internal review fixes applied; 184 package unit tests, catalog service tests; TC-PCFG-001..005, 007..009 pass; TC-PCFG-006 needs a registered mutation guard and skips without enterprise `record_locks`; migration `down()` checked up/down/up on a local database in a rolled-back scratch schema (TC-PCFG-007 only proves `up`) |
+| Phase A — Engine | Done | 2026-11-05 | All steps implemented, internal review fixes applied; 188 package unit tests, catalog service tests; TC-PCFG-001..005, 007..009 pass; TC-PCFG-006 needs a registered mutation guard and skips without enterprise `record_locks`; migration up/down/up covered by `migrations/__tests__/Migration20261105134035_product_configurator.integration.test.ts` (real PostgreSQL, rolled-back scratch schema, skipped without `DATABASE_URL`; TC-PCFG-007 only proves `up`) |
 | Phase B — Studio | Not Started | — | — |
 | Phase C — Configure and add to quote | Not Started | — | — |
 | Phase D — Configured lines on quotes and orders | Not Started | — | — |

@@ -57,7 +57,7 @@ type ModelCreateUndoPayload = { after?: ModelCreateSnapshot | null }
 type ModelUpdateUndoPayload = { before?: ModelDraftSnapshot | null }
 type ModelDeleteUndoPayload = { before?: ModelAuditSnapshot | null }
 
-export type ModelPublishResult = { modelVersionId: string; version: number; hash: string }
+export type ModelPublishResult = { modelVersionId: string; version: number; hash: string; updatedAt: string }
 
 function resolveEm(ctx: CommandRuntimeContext): EntityManager {
   return (ctx.container.resolve('em') as EntityManager).fork()
@@ -516,6 +516,7 @@ const publishModelCommand: CommandHandler<ModelIdInput, ModelPublishResult> = {
       modelVersionId: result.modelVersionId,
       version: result.version,
       hash: result.hash,
+      updatedAt: result.model.updatedAt.toISOString(),
     }
     await emitPublished(published, result.model)
     return published

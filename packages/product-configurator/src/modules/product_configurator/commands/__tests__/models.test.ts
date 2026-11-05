@@ -341,7 +341,7 @@ describe('product_configurator.models.delete', () => {
 })
 
 describe('product_configurator.models.publish', () => {
-  const publish = handler<{ id: string }, { modelVersionId: string; version: number; hash: string }>(
+  const publish = handler<{ id: string }, { modelVersionId: string; version: number; hash: string; updatedAt: string }>(
     'product_configurator.models.publish',
   )
 
@@ -372,11 +372,15 @@ describe('product_configurator.models.publish', () => {
     findOneWithDecryptionMock.mockImplementation(async (_em: unknown, entity: unknown) =>
       entity === ConfigurationModelVersion ? { id: VERSION_ID, version: 2 } : model,
     )
+    const flushedAt = new Date(UPDATED_AT.getTime() + 1000)
+    em.flush.mockImplementation(async () => {
+      model.updatedAt = flushedAt
+    })
 
     const result = await publish.execute({ id: MODEL_ID }, ctx)
 
     const version = created[0]
-    expect(result).toEqual({ modelVersionId: version.id, version: 3, hash: model.draftHash })
+    expect(result).toEqual({ modelVersionId: version.id, version: 3, hash: model.draftHash, updatedAt: flushedAt.toISOString() })
     expect(version).toMatchObject({ modelId: MODEL_ID, version: 3, validationReport: report, tenantId: TENANT_ID, organizationId: ORG_ID })
     expect(model.latestVersionId).toBe(version.id)
     expect(dataEngine.markOrmEntityChange).toHaveBeenCalledWith(expect.objectContaining({ action: 'updated', events: undefined }))

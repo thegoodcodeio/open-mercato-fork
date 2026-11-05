@@ -21,7 +21,13 @@ const em = {} as EntityManager
 const PRICE_KIND_ID = 'pk-regular'
 
 function setup(
-  options: { model?: unknown; priceKinds?: Array<{ id: string; organization_id: string | null }>; existingSkus?: string[]; pricedSkus?: string[] } = {},
+  options: {
+    model?: unknown
+    priceKinds?: Array<{ id: string; organization_id: string | null }>
+    existingSkus?: string[]
+    variantSkus?: string[]
+    pricedSkus?: string[]
+  } = {},
 ) {
   findOneWithDecryptionMock.mockImplementation(async (_em: unknown, entity: unknown) => {
     if (entity === ConfigurationModel) return options.model ?? null
@@ -40,7 +46,14 @@ function setup(
   const existing = new Map<string, CatalogItemRef>(
     (options.existingSkus ?? []).map((sku) => [
       sku,
-      { sku, productId: `existing-${sku}`, variantId: null, title: sku, unit: 'pc', salesUnitQuantity: '1' },
+      {
+        sku,
+        productId: `existing-${sku}`,
+        variantId: options.variantSkus?.includes(sku) ? `variant-${sku}` : null,
+        title: sku,
+        unit: 'pc',
+        salesUnitQuantity: '1',
+      },
     ]),
   )
   const resolveSkus = jest.fn(async () => ({ items: existing, ambiguous: [] }))
@@ -162,10 +175,39 @@ describe('seedReferenceModel', () => {
     )
   })
 
+  it('creates the missing price of a reused variant on the variant, not on its parent product', async () => {
+    const reusedSkus = [REFERENCE_BOUND_PRODUCT.sku, ...REFERENCE_PARTS.map((part) => part.sku)]
+    const variantSku = REFERENCE_PARTS[0].sku
+    const { container, execute } = setup({
+      existingSkus: reusedSkus,
+      variantSkus: [variantSku],
+      pricedSkus: REFERENCE_PARTS.slice(1).map((part) => part.sku),
+    })
+
+    await expect(seedReferenceModel(em, container, scope)).resolves.toBe(true)
+
+    const priceCreates = execute.mock.calls.filter(([commandId]) => commandId === 'catalog.prices.create')
+    expect(priceCreates).toHaveLength(1)
+    expect(priceCreates[0][1].input).toMatchObject({
+      productId: `existing-${variantSku}`,
+      variantId: `variant-${variantSku}`,
+      unitPriceNet: REFERENCE_PARTS[0].unitPriceNet,
+    })
+  })
+
+  it('skips with a warning when the unpublished reference model is bound to a product that no longer carries the reference SKU', async () => {
+    const { container, execute } = setup({
+      model: { id: 'model-left-unpublished', latestVersionId: null, productId: 'deleted-product' },
+    })
+
+    await expect(seedReferenceModel(em, container, scope)).resolves.toBe(false)
+    expect(execute).not.toHaveBeenCalled()
+  })
+
   it('publishes an existing reference model that has no published version yet', async () => {
     const reusedSkus = [REFERENCE_BOUND_PRODUCT.sku, ...REFERENCE_PARTS.map((part) => part.sku)]
     const { container, execute } = setup({
-      model: { id: 'model-left-unpublished', latestVersionId: null },
+      model: { id: 'model-left-unpublished', latestVersionId: null, productId: `existing-${REFERENCE_BOUND_PRODUCT.sku}` },
       existingSkus: reusedSkus,
       pricedSkus: REFERENCE_PARTS.map((part) => part.sku),
     })

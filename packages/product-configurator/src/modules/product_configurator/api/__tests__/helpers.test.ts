@@ -62,6 +62,15 @@ describe('resolveRouteContext', () => {
     expect(resolveOrganizationScopeMock).not.toHaveBeenCalled()
   })
 
+  it('answers 401 for a token whose tenant is not a UUID, like makeCrudRoute', async () => {
+    getAuthFromRequestMock.mockResolvedValue({ sub: 'user-1', tenantId: 'not-a-uuid', orgId: ORG_ID })
+
+    const response = (await resolveRouteContext(request())) as Response
+
+    expect(response.status).toBe(401)
+    expect(resolveOrganizationScopeMock).not.toHaveBeenCalled()
+  })
+
   it('answers 400 organization_scope_required when no single organization is selected', async () => {
     getAuthFromRequestMock.mockResolvedValue({ sub: 'user-1', tenantId: TENANT_ID, orgId: ORG_ID })
     resolveOrganizationScopeMock.mockResolvedValue({ selectedId: ORG_ID, filterIds: [ORG_ID], allowedIds: null, tenantId: TENANT_ID, selectionRejected: true })

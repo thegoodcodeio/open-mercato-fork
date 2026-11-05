@@ -28,7 +28,7 @@ export type RouteContext = {
 export async function resolveRouteContext(req: Request): Promise<RouteContext | Response> {
   const container = await createRequestContainer()
   const rawAuth = await getAuthFromRequest(req)
-  if (!rawAuth?.sub) {
+  if (!rawAuth?.sub || (rawAuth.tenantId && !z.string().uuid().safeParse(rawAuth.tenantId).success)) {
     const { translate } = await resolveTranslations()
     return NextResponse.json({ error: translate('product_configurator.errors.unauthorized', 'Unauthorized') }, { status: 401 })
   }

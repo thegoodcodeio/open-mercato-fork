@@ -75,8 +75,10 @@ async function findPartsWithoutPrice(
 /**
  * Creates the reference telehandler model with its catalog products and prices through catalog commands,
  * then publishes version 1 through this module's commands. Safe to run again after a partial failure:
- * missing products and prices are created, an existing unpublished reference model is published,
- * and nothing happens once the reference model has a published version.
+ * missing products and prices are created (a missing price of a reused variant goes on the variant),
+ * an existing unpublished reference model is published, and nothing happens once the reference model
+ * has a published version. An unpublished reference model bound to another product than the reference
+ * SKU (for example after that product was deleted) is skipped with a warning, so `mercato init` never aborts.
  */
 export async function seedReferenceModel(
   em: EntityManager,
@@ -102,12 +104,13 @@ export async function seedReferenceModel(
   const catalogPriceRowService = container.resolve<CatalogPriceRowService>('catalogPriceRowService')
   const ctx = buildSeedCommandContext(container, scope)
 
-  const createPrice = (productId: string, part: ReferencePart) =>
+  const createPrice = (target: Pick<CatalogItemRef, 'productId' | 'variantId'>, part: ReferencePart) =>
     commandBus.execute('catalog.prices.create', {
       input: {
         tenantId: scope.tenantId,
         organizationId: scope.organizationId,
-        productId,
+        productId: target.productId,
+        ...(target.variantId ? { variantId: target.variantId } : {}),
         priceKindId,
         currencyCode: REFERENCE_MODEL_CURRENCY,
         unitPriceNet: part.unitPriceNet,
@@ -117,6 +120,14 @@ export async function seedReferenceModel(
 
   const products = [{ ...REFERENCE_BOUND_PRODUCT, unitPriceNet: null }, ...REFERENCE_PARTS]
   const { items } = await catalogPriceRowService.resolveSkus(em, products.map((product) => product.sku), scope)
+  if (existing && items.get(REFERENCE_BOUND_PRODUCT.sku)?.productId !== existing.productId) {
+    logger.warn('Skipping the reference model: the unpublished reference model is bound to another product than the reference SKU', {
+      tenantId: scope.tenantId,
+      organizationId: scope.organizationId,
+      modelId: existing.id,
+    })
+    return false
+  }
   const productIds = new Map([...items].map(([sku, item]) => [sku, item.productId]))
   const reusedParts = REFERENCE_PARTS.flatMap((part) => {
     const item = items.get(part.sku)
@@ -125,9 +136,9 @@ export async function seedReferenceModel(
   const unpricedSkus = await findPartsWithoutPrice(em, catalogPriceRowService, reusedParts, priceKindId, scope)
 
   for (const product of products) {
-    const reusedProductId = productIds.get(product.sku)
-    if (reusedProductId) {
-      if (product.unitPriceNet !== null && unpricedSkus.has(product.sku)) await createPrice(reusedProductId, product)
+    const reused = items.get(product.sku)
+    if (reused) {
+      if (product.unitPriceNet !== null && unpricedSkus.has(product.sku)) await createPrice(reused, product)
       continue
     }
     const { result } = await commandBus.execute<Record<string, unknown>, { productId: string }>('catalog.products.create', {
@@ -145,7 +156,7 @@ export async function seedReferenceModel(
       ctx,
     })
     productIds.set(product.sku, result.productId)
-    if (product.unitPriceNet !== null) await createPrice(result.productId, product)
+    if (product.unitPriceNet !== null) await createPrice({ productId: result.productId, variantId: null }, product)
   }
 
   const boundProductId = productIds.get(REFERENCE_BOUND_PRODUCT.sku)

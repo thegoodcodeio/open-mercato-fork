@@ -17,7 +17,7 @@ import {
   uniqueSuffix,
 } from './helpers/fixtures'
 
-type PublishResult = { modelVersionId: string; version: number; hash: string }
+type PublishResult = { modelVersionId: string; version: number; hash: string; updatedAt: string }
 
 test.describe('TC-PCFG-003: publishing freezes immutable versions', () => {
   test('publishes version 1 and 2, keeps versions read-only and the model selectable while the draft changes', async ({ request }) => {
@@ -46,9 +46,10 @@ test.describe('TC-PCFG-003: publishing freezes immutable versions', () => {
       const published = await readModel(request, token, modelId)
       expect(published.latestVersion).toMatchObject({ id: v1.modelVersionId, version: 1, hash: v1.hash })
       expect(published.hasUnpublishedChanges).toBe(false)
+      expect(Date.parse(v1.updatedAt), 'publish returns the new optimistic-lock token').toBe(Date.parse(published.updatedAt))
 
       const changedDefinition = { ...definition, fixedSpecification: [{ label: 'Voltage', value: '400 V' }] }
-      const saved = await saveModel(request, token, { id: modelId, updatedAt: published.updatedAt, draftDefinition: changedDefinition })
+      const saved = await saveModel(request, token, { id: modelId, updatedAt: v1.updatedAt, draftDefinition: changedDefinition })
       expect(saved.status()).toBe(200)
 
       const edited = await readModel(request, token, modelId)

@@ -218,12 +218,13 @@ describe('POST /models/publish', () => {
   it('runs the publish command and the after-success callbacks', async () => {
     const runAfterSuccess = jest.fn(async () => undefined)
     runRouteMutationGuardsMock.mockResolvedValue({ ok: true, runAfterSuccess })
-    commandExecuteMock.mockResolvedValue({ result: { modelVersionId: VERSION_ID, version: 1, hash: 'abc' }, logEntry: null })
+    const published = { modelVersionId: VERSION_ID, version: 1, hash: 'abc', updatedAt: '2026-11-02T00:00:00.000Z' }
+    commandExecuteMock.mockResolvedValue({ result: published, logEntry: null })
 
     const response = await publish(postRequest('/models/publish', { id: MODEL_ID }))
 
     expect(response.status).toBe(200)
-    await expect(response.json()).resolves.toEqual({ modelVersionId: VERSION_ID, version: 1, hash: 'abc' })
+    await expect(response.json()).resolves.toEqual(published)
     expect(commandExecuteMock).toHaveBeenCalledWith(
       'product_configurator.models.publish',
       expect.objectContaining({ input: { id: MODEL_ID }, ctx: expect.objectContaining({ selectedOrganizationId: ORG_ID }) }),

@@ -43,6 +43,7 @@ const publishResponseSchema = z.object({
   modelVersionId: z.string().uuid(),
   version: z.number().int(),
   hash: z.string(),
+  updatedAt: z.string(),
 })
 
 export const openApi: OpenApiRouteDoc = {
