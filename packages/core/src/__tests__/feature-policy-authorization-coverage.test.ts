@@ -12,6 +12,7 @@ const serverRuntimeRoots = [
   'packages/search/src/modules',
   'packages/enterprise/src/modules',
   'packages/webhooks/src/modules',
+  'packages/product-configurator/src/modules',
 ]
 
 const sharedAuthorizationRunners = [

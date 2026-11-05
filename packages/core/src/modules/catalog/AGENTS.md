@@ -62,6 +62,10 @@ When multiple price rows match the same context, `selectBestPrice` resolves ties
 
 Per-line resolver (`resolveLinePrice`) for `cart`/`sales` call sites — winning row, derived net/gross, quantity tiers, `priceIsPromotional`. **`ecommerce/lib/storefrontPricing.ts` deliberately does NOT call this**: it has no shared cache across a page's targets, and calling it once per product/variant regressed the Storefront Public API's O(1)-queries-per-page invariant (3.4 Part A, owner decision 2026-10-16, permanent exemption — see that file's header comment).
 
+### Catalog reads for other modules (`services/catalogPriceRowService.ts`)
+
+DI key `catalogPriceRowService`, used by `product_configurator` instead of reading catalog tables. Every method takes the caller's `EntityManager` first and filters by tenant and organization: `resolveProducts`, `resolveSkus` (at most 500 SKUs; a SKU on both a product and a variant is `ambiguous`; `unit` is the base unit tiers use), `resolvePriceKinds` and `findPriceRows` (product items get product-level rows only, variant items add their own rows via `filterRowsForVariant`). Changes must stay additive.
+
 ### Resolver-chain tie-break
 
 `registerCatalogPricingResolver`'s chain is sorted by `priority` (descending) using a stable sort, so two resolvers registered at the **same priority** run in **registration order** — the first-registered resolver is asked first. This is deterministic and tested (`lib/__tests__/pricing.test.ts`), not an accident of array order; a resolver depending on running before/after a same-priority peer should still set an explicit, distinct `priority` rather than relying on load order.

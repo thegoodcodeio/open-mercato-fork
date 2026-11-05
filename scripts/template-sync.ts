@@ -209,6 +209,8 @@ const SYNC_INTERNAL_PACKAGE_KEYS = [
   '@open-mercato/gateway-autopay',
   '@open-mercato/gateway-stripe',
   '@open-mercato/gateway-tpay',
+  // Enabled behind OM_ENABLE_PRODUCT_CONFIGURATOR, same reasoning as enterprise above.
+  '@open-mercato/product-configurator',
   '@open-mercato/sync-akeneo',
 ] as const
 // Modules whose source ships in every scaffold but must stay runtime-disabled there.
