@@ -42,9 +42,19 @@ jest.mock('@open-mercato/ui/backend/forms', () => ({
 
 jest.mock('next/navigation', () => ({ useSearchParams: () => searchParams }))
 
+const breadcrumbs: Array<Array<{ label: string; href?: string }>> = []
+jest.mock('@open-mercato/ui/backend/AppShell', () => ({
+  ApplyBreadcrumb: ({ breadcrumb }: { breadcrumb: Array<{ label: string; href?: string }> }) => {
+    breadcrumbs.push(breadcrumb)
+    return null
+  },
+}))
+
+import { ForbiddenError } from '@open-mercato/ui/backend/utils/api'
 import { SnapshotDetail } from '../SnapshotDetail'
 
 const QUOTE_ID = '33333333-3333-4333-8333-333333333333'
+const ORDER_ID = '55555555-5555-4555-8555-555555555555'
 
 const snapshot = {
   id: 'snap-1',
@@ -74,6 +84,7 @@ const snapshot = {
 beforeEach(() => {
   apiCallMock.mockReset()
   searchParams = new URLSearchParams()
+  breadcrumbs.length = 0
 })
 
 describe('SnapshotDetail', () => {
@@ -119,9 +130,51 @@ describe('SnapshotDetail', () => {
     expect(notFound.getAttribute('data-back')).toBe(`/backend/sales/quotes/${QUOTE_ID}`)
   })
 
-  it('shows an error state when access is missing', async () => {
-    apiCallMock.mockResolvedValue({ ok: false, status: 403, result: { error: 'Forbidden' } })
+  it('shows the forbidden state when access is missing (apiCall throws ForbiddenError on 403)', async () => {
+    apiCallMock.mockRejectedValue(new ForbiddenError('Forbidden', { requiredFeatures: ['sales.orders.view'] }))
     render(<SnapshotDetail snapshotId="snap-1" />)
-    expect((await screen.findByTestId('error-message')).textContent).toContain('You do not have access')
+    expect((await screen.findByTestId('error-message')).textContent).toBe('You do not have access to this configuration.')
+  })
+
+  it('shows the retryable error for any other failure', async () => {
+    apiCallMock.mockRejectedValue(new Error('network'))
+    render(<SnapshotDetail snapshotId="snap-1" />)
+    expect((await screen.findByTestId('error-message')).textContent).toBe('Could not load the configuration details.')
+  })
+
+  it('reads the snapshot through the order it was opened from, with the order as the way back', async () => {
+    searchParams = new URLSearchParams({ orderId: ORDER_ID })
+    apiCallMock.mockResolvedValue({ ok: true, status: 200, result: { ...snapshot, lineId: 'order-line-1', lineName: 'Pump (as ordered)' } })
+    render(<SnapshotDetail snapshotId="snap-1" />)
+    expect(await screen.findByText('Pump (as ordered)')).toBeTruthy()
+    expect(apiCallMock.mock.calls[0][0]).toBe(`/api/product_configurator/snapshots?id=snap-1&orderId=${ORDER_ID}`)
+    expect(screen.getByText('On order')).toBeTruthy()
+    expect(screen.getByTestId('subtitle').textContent).toContain('added Nov 6, 2026')
+    expect(screen.getByTestId('subtitle').textContent).not.toContain('quote')
+    expect(screen.getByTestId('snapshot-net-price').textContent).toContain('Before discounts and tax.')
+    expect(screen.getByTestId('snapshot-summary').textContent).toContain('Summary on the order line')
+    expect(screen.getByRole('banner').getAttribute('data-back')).toBe(`/backend/sales/orders/${ORDER_ID}`)
+    expect(breadcrumbs.at(-1)?.[0]).toEqual(expect.objectContaining({ label: 'Orders', href: '/backend/sales/orders' }))
+  })
+
+  it('shows not found when the order does not carry the snapshot', async () => {
+    searchParams = new URLSearchParams({ orderId: ORDER_ID })
+    apiCallMock.mockResolvedValue({ ok: false, status: 404, result: { code: 'snapshot_not_found' } })
+    render(<SnapshotDetail snapshotId="snap-1" />)
+    expect((await screen.findByTestId('not-found')).getAttribute('data-back')).toBe(`/backend/sales/orders/${ORDER_ID}`)
+    expect(breadcrumbs.at(-1)?.[0]).toEqual(expect.objectContaining({ label: 'Orders' }))
+  })
+
+  it('keeps the order breadcrumb on the forbidden and error states', async () => {
+    searchParams = new URLSearchParams({ orderId: ORDER_ID })
+    apiCallMock.mockRejectedValueOnce(new ForbiddenError('Forbidden'))
+    const { unmount } = render(<SnapshotDetail snapshotId="snap-1" />)
+    await screen.findByTestId('error-message')
+    unmount()
+    breadcrumbs.length = 0
+    apiCallMock.mockResolvedValueOnce({ ok: false, status: 500, result: null })
+    render(<SnapshotDetail snapshotId="snap-1" />)
+    expect((await screen.findByTestId('error-message')).textContent).toBe('Could not load the configuration details.')
+    expect(breadcrumbs.at(-1)?.[0]).toEqual(expect.objectContaining({ label: 'Orders' }))
   })
 })

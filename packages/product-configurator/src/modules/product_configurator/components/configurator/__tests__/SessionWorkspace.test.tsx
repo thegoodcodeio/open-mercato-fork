@@ -102,8 +102,29 @@ function session(overrides: Partial<SessionDetail> = {}): SessionDetail {
     modelVersion: { id: 'version-1', version: 3, modelTitle: 'Pump', definition: build() },
     selections: {},
     evaluation: null,
+    mode: 'new',
+    sourceSnapshotId: null,
+    sourceLineName: null,
+    migration: null,
     ...overrides,
   }
+}
+
+function copySession(): SessionDetail {
+  return session({
+    mode: 'duplicate',
+    sourceSnapshotId: 'snap-source',
+    sourceLineName: 'Pump (farm spec)',
+    selections: { motor: 'standard' },
+    modelVersion: { id: 'version-4', version: 4, modelTitle: 'Pump', definition: build() },
+    migration: {
+      fromVersion: { id: 'version-3', version: 3 },
+      toVersion: { id: 'version-4', version: 4 },
+      kept: [{ featureKey: 'motor', label: 'Motor', oldValue: 'standard', oldDisplay: 'Standard', reason: 'kept' }],
+      dropped: [{ featureKey: 'hose', label: 'Hose', oldValue: 'long', oldDisplay: 'Long hose', reason: 'feature_removed' }],
+      reset: [{ featureKey: 'color', label: 'Colour', oldValue: 'green', oldDisplay: 'Racing green', reason: 'option_removed' }],
+    },
+  })
 }
 
 function evaluated(revision: number, overrides: Record<string, unknown> = {}) {
@@ -171,6 +192,64 @@ describe('SessionWorkspace', () => {
     expect(call(1)).toEqual({ url: '/api/product_configurator/sessions/finalise', body: { id: SESSION_ID, expectedHash: 'hash-1', revision: 1 } })
     expect(flashMock).toHaveBeenCalledWith('Pump added to the quote (€1,000.00 net).', 'success')
     expect(pushMock).toHaveBeenCalledWith(`/backend/sales/quotes/${QUOTE_ID}?configuredLine=snap-1`)
+  })
+
+  describe('a copy opened on a newer model version', () => {
+    it('shows the copy header and marks the reset and dropped choices from the start', async () => {
+      await renderReady(copySession())
+      expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Copy of: Pump (farm spec)')
+      expect(screen.getByTestId('header-subtitle').textContent).toBe('Quote SQ-42 · Acme Farms · copied from model v3, now v4')
+      const notice = screen.getByTestId('configurator-migration-notice')
+      expect(notice.textContent).toContain('Model v4 changed 2 of the copied choices.')
+      expect(notice.textContent).toContain('Hose was removed in v4.')
+      expect(screen.getByTestId('configurator-migration-color').textContent).toContain('Reset to Signal red: Racing green was removed in v4.')
+    })
+
+    it('reviews the changed choices before adding and acknowledges them on finalise', async () => {
+      await renderReady(copySession())
+      await act(async () => {
+        fireEvent.click(addButton())
+      })
+      expect(apiCallMock).toHaveBeenCalledTimes(1)
+      const review = screen.getByTestId('configurator-copy-review')
+      expect(within(review).getByTestId('configurator-copy-review-color').textContent).toContain('Racing green')
+      expect(within(review).getByTestId('configurator-copy-review-color').textContent).toContain('Signal red')
+      expect(within(review).getByTestId('configurator-copy-review-hose').textContent).toContain('Removed')
+      expect(within(review).queryByTestId('configurator-copy-review-motor')).toBeNull()
+      const add = within(review).getByTestId('configurator-copy-review-add')
+      expect(add.hasAttribute('disabled')).toBe(true)
+
+      fireEvent.click(within(review).getByRole('checkbox'))
+      apiCallMock.mockResolvedValueOnce({ ok: true, status: 200, result: { snapshotId: 'snap-copy', quoteLineId: 'line-copy', hash: 'hash-1', replay: false } })
+      await act(async () => {
+        fireEvent.click(add)
+      })
+      expect(call(1)).toEqual({
+        url: '/api/product_configurator/sessions/finalise',
+        body: { id: SESSION_ID, expectedHash: 'hash-1', revision: 1, migrationAcknowledged: true },
+      })
+      expect(pushMock).toHaveBeenCalledWith(`/backend/sales/quotes/${QUOTE_ID}?configuredLine=snap-copy`)
+    })
+
+    it('returns to the workspace with Edit choices and adds nothing', async () => {
+      await renderReady(copySession())
+      await act(async () => {
+        fireEvent.click(addButton())
+      })
+      fireEvent.click(within(screen.getByTestId('configurator-copy-review')).getByRole('button', { name: 'Edit choices' }))
+      await waitFor(() => expect(screen.queryByTestId('configurator-copy-review')).toBeNull())
+      expect(apiCallMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('opens the review when finalise reports an unconfirmed migration', async () => {
+      await renderReady()
+      apiCallMock.mockResolvedValueOnce({ ok: false, status: 422, result: { code: 'migration_unconfirmed', migration: copySession().migration } })
+      await act(async () => {
+        fireEvent.click(addButton())
+      })
+      expect(screen.getByTestId('configurator-copy-review')).toBeTruthy()
+      expect(screen.queryByTestId('configurator-finalise-outcome')).toBeNull()
+    })
   })
 
   it('serializes evaluate calls so a quick second change carries the revision of the first answer', async () => {

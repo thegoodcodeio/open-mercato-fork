@@ -11,23 +11,44 @@ import { quoteNotFound, type ModelScope } from '../../commands/shared'
 import {
   assertFeatures,
   findLineCarryingSnapshot,
+  orderExists,
   readDocumentLines,
+  readDocumentLinesByIds,
   readQuoteHeader,
   readStoredLines,
+  SNAPSHOT_ORDER_FEATURES,
   SNAPSHOT_QUOTE_FEATURES,
+  type DocumentKind,
   type StoredLine,
 } from '../../lib/quoteAccess'
-import { buildSnapshotReadModel, linesBySnapshot, type SnapshotLineFacts, type SnapshotReadModel } from '../../lib/snapshots'
+import {
+  buildSnapshotReadModel,
+  linesBySnapshot,
+  presentLine,
+  REMOVED_LINE,
+  type SnapshotLineFacts,
+  type SnapshotReadModel,
+} from '../../lib/snapshots'
 import { resolveRouteContext, routeErrorResponse, type RouteContext } from '../helpers'
 import { errorResponseSchema, productConfiguratorTag } from '../openapi'
 
+/** The handler adds the sales feature of the document asked for: quote visibility, or order visibility with `orderId`. */
 export const metadata = {
-  GET: { requireAuth: true, requireFeatures: [...SNAPSHOT_QUOTE_FEATURES] },
+  GET: { requireAuth: true, requireFeatures: ['product_configurator.snapshots.view'] },
 }
 
 const MAX_SNAPSHOTS_PER_QUOTE = 500
+const ID_CHUNK_SIZE = 100
 
 type VersionFacts = { version: number; definition: ConfigurationDefinition | null; modelTitle: string | null }
+
+async function orderNotFound(): Promise<CrudHttpError> {
+  const { translate } = await resolveTranslations()
+  return new CrudHttpError(404, {
+    error: translate('product_configurator.errors.order_not_found', 'Order not found.'),
+    code: 'order_not_found',
+  })
+}
 
 async function snapshotNotFound(): Promise<CrudHttpError> {
   const { translate } = await resolveTranslations()
@@ -82,6 +103,29 @@ async function toReadModels(
 }
 
 /**
+ * The lines of one quote or order carrying the given snapshots, by snapshot id, without reading every
+ * line of the document: a linked snapshot can only be carried by the line with its `quote_line_id`
+ * (order lines keep the quote line ids). Only an unlinked snapshot needs all lines.
+ */
+async function readCarriers(
+  context: RouteContext,
+  kind: DocumentKind,
+  parentId: string,
+  snapshots: ConfigurationSnapshot[],
+): Promise<Map<string, StoredLine>> {
+  const { ctx, scope } = context
+  const linkedLineIds = snapshots.flatMap((snapshot) => (snapshot.quoteLineId ? [snapshot.quoteLineId] : []))
+  const carried = linesBySnapshot(await readDocumentLinesByIds(ctx.container, kind, parentId, linkedLineIds, scope))
+  if (snapshots.every((snapshot) => snapshot.quoteLineId)) return carried
+  const allCarried = linesBySnapshot(await readDocumentLines(ctx.container, kind, parentId, scope))
+  for (const snapshot of snapshots) {
+    const line = allCarried.get(snapshot.id)
+    if (!snapshot.quoteLineId && line) carried.set(snapshot.id, line)
+  }
+  return carried
+}
+
+/**
  * Configurations of one quote of the selected organization. A snapshot counts when a line of the
  * quote carries it or finalise linked it; a pending snapshot of an unfinished finalise is left out.
  */
@@ -98,14 +142,14 @@ async function readQuoteSnapshots(context: RouteContext, em: EntityManager, quot
   )
   const truncated = found.length > MAX_SNAPSHOTS_PER_QUOTE
   const snapshots = truncated ? found.slice(0, MAX_SNAPSHOTS_PER_QUOTE) : found
-  const carried = linesBySnapshot(await readDocumentLines(ctx.container, 'quote', quoteId, scope))
+  const carried = await readCarriers(context, 'quote', quoteId, snapshots)
   const listed = snapshots.filter((snapshot) => snapshot.quoteLineId || carried.has(snapshot.id))
   const items = await toReadModels(
     em,
     listed,
     (snapshot) => {
       const line = carried.get(snapshot.id)
-      return line ? { state: 'present', name: line.name } : { state: 'removed', name: null }
+      return line ? presentLine(line) : REMOVED_LINE
     },
     scope,
   )
@@ -143,8 +187,90 @@ async function readSnapshot(context: RouteContext, em: EntityManager, id: string
   if (!snapshot) throw await snapshotNotFound()
   const carrier = await findCarrier(context, snapshot)
   if (!snapshot.quoteLineId && !carrier) throw await snapshotNotFound()
-  const line: SnapshotLineFacts = carrier ? { state: 'present', name: carrier.name } : { state: 'removed', name: null }
+  const line = carrier ? presentLine(carrier) : REMOVED_LINE
   const [item] = await toReadModels(em, [snapshot], () => line, scope)
+  return NextResponse.json(item)
+}
+
+async function assertOrderExists(context: RouteContext, orderId: string): Promise<void> {
+  if (!(await orderExists(context.ctx.container, orderId, context.scope))) throw await orderNotFound()
+}
+
+async function findSnapshots(em: EntityManager, ids: string[], scope: ModelScope): Promise<ConfigurationSnapshot[]> {
+  const found: ConfigurationSnapshot[] = []
+  for (let start = 0; start < ids.length; start += ID_CHUNK_SIZE) {
+    const chunk = ids.slice(start, start + ID_CHUNK_SIZE)
+    found.push(
+      ...(await findWithDecryption(
+        em,
+        ConfigurationSnapshot,
+        { tenantId: scope.tenantId, organizationId: scope.organizationId, id: { $in: chunk } },
+        undefined,
+        scope,
+      )),
+    )
+  }
+  return found.sort(byCreatedAt)
+}
+
+function byCreatedAt(left: Pick<ConfigurationSnapshot, 'id' | 'createdAt'>, right: Pick<ConfigurationSnapshot, 'id' | 'createdAt'>): number {
+  return left.createdAt.getTime() - right.createdAt.getTime() || left.id.localeCompare(right.id)
+}
+
+/** Ids of the oldest `limit` stored snapshots among `ids`, read by id and creation time only. */
+async function findOldestSnapshotIds(em: EntityManager, ids: string[], scope: ModelScope, limit: number): Promise<string[]> {
+  const found: Array<Pick<ConfigurationSnapshot, 'id' | 'createdAt'>> = []
+  for (let start = 0; start < ids.length; start += ID_CHUNK_SIZE) {
+    const chunk = ids.slice(start, start + ID_CHUNK_SIZE)
+    found.push(
+      ...(await findWithDecryption(
+        em,
+        ConfigurationSnapshot,
+        { tenantId: scope.tenantId, organizationId: scope.organizationId, id: { $in: chunk } },
+        { fields: ['id', 'createdAt'] },
+        scope,
+      )),
+    )
+  }
+  return found.sort(byCreatedAt).slice(0, limit).map((snapshot) => snapshot.id)
+}
+
+/**
+ * Configurations on one order: the snapshots its lines reference (quote and quote line ids are history
+ * after a conversion), oldest first, at most as many as a quote lists. Only the listed snapshots are
+ * loaded in full; narrowed by `ids`, only the lines that can carry them are read.
+ */
+async function readOrderSnapshots(context: RouteContext, em: EntityManager, orderId: string, ids: string[]): Promise<Response> {
+  const { ctx, scope } = context
+  await assertOrderExists(context, orderId)
+  let snapshots: ConfigurationSnapshot[]
+  let carried: Map<string, StoredLine>
+  let truncated = false
+  if (ids.length) {
+    const requested = await findSnapshots(em, ids, scope)
+    carried = await readCarriers(context, 'order', orderId, requested)
+    snapshots = requested.filter((snapshot) => carried.has(snapshot.id))
+  } else {
+    carried = linesBySnapshot(await readDocumentLines(ctx.container, 'order', orderId, scope))
+    const oldest = await findOldestSnapshotIds(em, Array.from(carried.keys()), scope, MAX_SNAPSHOTS_PER_QUOTE + 1)
+    truncated = oldest.length > MAX_SNAPSHOTS_PER_QUOTE
+    snapshots = await findSnapshots(em, oldest.slice(0, MAX_SNAPSHOTS_PER_QUOTE), scope)
+  }
+  const items = await toReadModels(em, snapshots, (snapshot) => {
+    const line = carried.get(snapshot.id)
+    return line ? presentLine(line) : REMOVED_LINE
+  }, scope)
+  return NextResponse.json({ items, truncated })
+}
+
+/** One snapshot opened from an order: a line of that order must carry it. */
+async function readOrderSnapshot(context: RouteContext, em: EntityManager, orderId: string, id: string): Promise<Response> {
+  await assertOrderExists(context, orderId)
+  const [snapshot] = await findSnapshots(em, [id], context.scope)
+  if (!snapshot) throw await snapshotNotFound()
+  const carrier = (await readCarriers(context, 'order', orderId, [snapshot])).get(id)
+  if (!carrier) throw await snapshotNotFound()
+  const [item] = await toReadModels(em, [snapshot], () => presentLine(carrier), context.scope)
   return NextResponse.json(item)
 }
 
@@ -153,8 +279,13 @@ export async function GET(req: Request): Promise<Response> {
     const context = await resolveRouteContext(req)
     if (context instanceof Response) return context
     const query = snapshotsQuerySchema.parse(Object.fromEntries(new URL(req.url).searchParams))
-    await assertFeatures(context.ctx, SNAPSHOT_QUOTE_FEATURES, context.scope)
+    await assertFeatures(context.ctx, query.orderId ? SNAPSHOT_ORDER_FEATURES : SNAPSHOT_QUOTE_FEATURES, context.scope)
     const em = (context.ctx.container.resolve('em') as EntityManager).fork()
+    if (query.orderId) {
+      return query.id
+        ? await readOrderSnapshot(context, em, query.orderId, query.id)
+        : await readOrderSnapshots(context, em, query.orderId, query.ids)
+    }
     if (query.id) return await readSnapshot(context, em, query.id)
     return await readQuoteSnapshots(context, em, query.quoteId ?? '', query.ids)
   } catch (error) {
@@ -174,6 +305,7 @@ const snapshotSchema = z.object({
   quoteId: z.string().uuid(),
   quoteLineId: z.string().uuid().nullable(),
   lineState: z.enum(['present', 'removed']),
+  lineId: z.string().uuid().nullable().describe('The line carrying the snapshot in the document asked for; null when removed'),
   lineName: z.string().nullable().describe('Name of the document line carrying the snapshot; null when the line is gone'),
   modelTitle: z.string().nullable(),
   modelVersion: z.object({ id: z.string().uuid(), version: z.number().int().nullable(), hash: z.string() }),
@@ -197,17 +329,18 @@ export const openApi: OpenApiRouteDoc = {
   methods: {
     GET: {
       summary: 'Read configuration snapshots',
-      description: `With \`quoteId\`, lists the configurations of a quote of the selected organization (optionally narrowed by \`ids\`, at most ${SNAPSHOTS_MAX_IDS}); \`lineState\` is \`removed\` when no line of the quote carries the snapshot any more. At most ${MAX_SNAPSHOTS_PER_QUOTE} snapshots are read, oldest first; \`truncated\` is true when the quote has more. With \`id\`, returns one snapshot; its line is \`present\` when the quote line exists or an order line with the same id carries it, and a pending snapshot that no line carries answers 404. Requires \`product_configurator.snapshots.view\` and \`sales.quotes.view\`.`,
+      description: `With \`orderId\`, lists the configurations the lines of an order of the selected organization carry (optionally narrowed by \`ids\`), oldest first, at most ${MAX_SNAPSHOTS_PER_QUOTE}; with \`id\` and \`orderId\`, returns one snapshot that a line of that order carries (404 otherwise). Order reads need \`product_configurator.snapshots.view\` and \`sales.orders.view\` only. With \`quoteId\`, lists the configurations of a quote of the selected organization (optionally narrowed by \`ids\`, at most ${SNAPSHOTS_MAX_IDS}); \`lineState\` is \`removed\` when no line of the quote carries the snapshot any more. At most ${MAX_SNAPSHOTS_PER_QUOTE} snapshots are read, oldest first; \`truncated\` is true when the quote has more. With \`id\`, returns one snapshot; its line is \`present\` when the quote line exists or an order line with the same id carries it, and a pending snapshot that no line carries answers 404. Quote and id reads need \`product_configurator.snapshots.view\` and \`sales.quotes.view\`.`,
       query: z.object({
         id: z.string().uuid().optional(),
         quoteId: z.string().uuid().optional(),
-        ids: z.string().optional().describe('Comma-separated snapshot ids, with quoteId'),
+        orderId: z.string().uuid().optional().describe('Alone, or with `id` to read one snapshot the order carries'),
+        ids: z.string().optional().describe('Comma-separated snapshot ids, with quoteId or orderId'),
       }),
       responses: [
         { status: 200, description: 'One snapshot (by id)', schema: snapshotSchema },
         {
           status: 200,
-          description: 'Snapshots of the quote (by quoteId)',
+          description: 'Snapshots of the quote (by quoteId) or of the order (by orderId)',
           schema: z.object({
             items: z.array(snapshotSchema),
             truncated: z.boolean().describe(`True when the quote has more than ${MAX_SNAPSHOTS_PER_QUOTE} snapshots and only the oldest are listed`),
@@ -216,8 +349,12 @@ export const openApi: OpenApiRouteDoc = {
       ],
       errors: [
         { status: 400, description: 'Invalid query or no single organization selected', schema: errorResponseSchema },
-        { status: 403, description: 'Missing configuration or sales quote access', schema: errorResponseSchema },
-        { status: 404, description: 'Snapshot or quote not found in the selected organization', schema: errorResponseSchema },
+        { status: 403, description: 'Missing configuration access, or sales access to the quote or order asked for', schema: errorResponseSchema },
+        {
+          status: 404,
+          description: '`snapshot_not_found`, `quote_not_found` or `order_not_found` in the selected organization; with `orderId`, a snapshot no line of the order carries',
+          schema: errorResponseSchema,
+        },
       ],
     },
   },

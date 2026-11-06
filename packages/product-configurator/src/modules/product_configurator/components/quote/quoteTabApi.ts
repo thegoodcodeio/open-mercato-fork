@@ -6,12 +6,20 @@ import { SESSIONS_API } from '../configurator/session/sessionApi'
 
 export const SESSIONS_MANAGE_FEATURE = 'product_configurator.sessions.manage'
 export const MODELS_VIEW_FEATURE = 'product_configurator.models.view'
+export const QUOTES_MANAGE_FEATURE = 'sales.quotes.manage'
+
+/** Widget id of the quote Configurations tab; the sales page uses it as the tab id. */
+export const QUOTE_TAB_WIDGET_ID = 'product_configurator.injection.quote-configurations-tab'
 
 /** The context the sales document page passes to `sales.document.detail.quote:tabs` widgets. */
 export const quoteTabContextSchema = z.object({
   kind: z.string(),
   documentId: z.string().nullable().optional(),
-  record: z.object({ id: z.string(), currencyCode: z.string().nullable().optional() }).passthrough().nullable().optional(),
+  record: z
+    .object({ id: z.string(), currencyCode: z.string().nullable().optional(), updatedAt: z.string().nullable().optional() })
+    .passthrough()
+    .nullable()
+    .optional(),
 })
 
 const candidateSchema = z.object({
@@ -39,6 +47,7 @@ export function parseCandidates(payload: unknown): ModelCandidate[] | null {
 const sessionItemSchema = z.object({
   id: z.string(),
   status: z.enum(SESSION_STATUSES),
+  sourceSnapshotId: z.string().nullable().optional(),
   modelVersion: z.object({ version: z.number().int().nullable(), modelTitle: z.string().nullable() }),
   createdBy: z.object({ id: z.string(), displayName: z.string().nullable() }).nullable(),
   createdAt: z.string(),

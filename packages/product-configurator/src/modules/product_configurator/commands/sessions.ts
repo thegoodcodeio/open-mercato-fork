@@ -10,11 +10,14 @@ import {
   ConfigurationModel,
   ConfigurationModelVersion,
   ConfigurationSession,
+  ConfigurationSnapshot,
+  type ConfigurationSessionMode,
   type ConfigurationSessionStatus,
 } from '../data/entities'
 import {
   definitionSchema,
   rawSelectionsSchema,
+  SESSION_MODE_DUPLICATE,
   SESSION_MODE_NEW,
   sessionEvaluateSchema,
   sessionIdSchema,
@@ -28,6 +31,7 @@ import {
 import { evaluateConfiguration, type ConfigurationResult } from '../lib/evaluation'
 import { ConfiguratorEvaluationError } from '../lib/evaluator/errors'
 import { assertFeatures, readQuoteHeader, SESSION_FEATURES, type QuoteHeader } from '../lib/quoteAccess'
+import { migrateSelections, readIntent, type SelectionMigration } from '../lib/selectionMigration'
 import {
   commandTenantId,
   findLiveModel,
@@ -47,8 +51,11 @@ export type SessionModelVersionRef = { id: string; version: number; hash: string
 export type SessionOpenResult = {
   sessionId: string
   revision: number
+  mode: ConfigurationSessionMode
+  sourceSnapshotId: string | null
   modelVersion: SessionModelVersionRef
   quote: { id: string; number: string | null; customerName: string | null }
+  migration: SelectionMigration | null
 }
 
 /** The part of a session a client needs to continue from the current revision. */
@@ -98,6 +105,8 @@ const sessionChanged = (session: ConfigurationSession) =>
     session: toSessionState(session),
   })
 export const versionNotFound = () => httpError(404, 'version_not_found', 'Model version not found.')
+const snapshotNotInQuote = () =>
+  httpError(422, 'snapshot_not_in_quote', 'This configuration does not belong to this quote and model.')
 
 const EVALUATION_FALLBACKS: Record<ConfiguratorEvaluationError['code'], string> = {
   invalid_selection: 'One of the choices is not valid.',
@@ -152,6 +161,60 @@ async function pickModel(em: EntityManager, input: SessionOpenInput, quote: Quot
   return candidates[0]
 }
 
+/** `fromSnapshotId` without a mode copies it (`duplicate`); any other mode or combination is refused. */
+async function resolveOpenMode(input: SessionOpenInput): Promise<ConfigurationSessionMode> {
+  if (input.fromSnapshotId) {
+    if (input.mode === undefined || input.mode === SESSION_MODE_DUPLICATE) return SESSION_MODE_DUPLICATE
+    throw await modeNotSupported()
+  }
+  if (input.mode === undefined || input.mode === SESSION_MODE_NEW) return SESSION_MODE_NEW
+  throw await modeNotSupported()
+}
+
+type OpenPlan = {
+  model: ConfigurationModel
+  version: ConfigurationModelVersion
+  selections: Record<string, unknown>
+  migration: SelectionMigration | null
+}
+
+/** A fresh session on the model's latest version, with no choices. */
+async function planNewSession(em: EntityManager, input: SessionOpenInput, quote: QuoteHeader, scope: ModelScope): Promise<OpenPlan> {
+  const model = await pickModel(em, input, quote, scope)
+  const version = model.latestVersionId ? await findVersion(em, model.latestVersionId, scope) : null
+  if (!version) throw await noPublishedVersion()
+  return { model, version, selections: {}, migration: null }
+}
+
+/**
+ * A copy of a snapshot of this quote on its model's latest version. The snapshot's intent is mapped
+ * onto that version; what the version refuses is dropped or reset and listed in `migration`.
+ */
+async function planDuplicateSession(
+  em: EntityManager,
+  input: SessionOpenInput & { fromSnapshotId: string },
+  quote: QuoteHeader,
+  scope: ModelScope,
+): Promise<OpenPlan> {
+  const snapshot = await findOneWithDecryption(
+    em,
+    ConfigurationSnapshot,
+    { id: input.fromSnapshotId, tenantId: scope.tenantId, organizationId: scope.organizationId },
+    undefined,
+    scope,
+  )
+  if (!snapshot || snapshot.quoteId !== quote.id) throw await snapshotNotInQuote()
+  const sourceVersion = await findVersion(em, snapshot.modelVersionId, scope)
+  if (!sourceVersion || (input.modelId && input.modelId !== sourceVersion.modelId)) throw await snapshotNotInQuote()
+  const { model, version } = await planNewSession(em, { ...input, modelId: sourceVersion.modelId }, quote, scope)
+  const migrated = migrateSelections({
+    intent: readIntent(snapshot.selections.intent),
+    from: { ref: { id: sourceVersion.id, version: sourceVersion.version }, definition: definitionSchema.parse(sourceVersion.definition) },
+    to: { ref: { id: version.id, version: version.version }, definition: definitionSchema.parse(version.definition) },
+  })
+  return { model, version, selections: migrated.selections, migration: migrated.migration }
+}
+
 const openSessionCommand: CommandHandler<SessionOpenInput, SessionOpenResult> = {
   id: 'product_configurator.sessions.open',
   isUndoable: false,
@@ -159,25 +222,27 @@ const openSessionCommand: CommandHandler<SessionOpenInput, SessionOpenResult> = 
     const input = sessionOpenSchema.parse(rawInput)
     const scope = await resolveSessionScope(ctx)
     const userId = await assertFeatures(ctx, SESSION_FEATURES, scope)
-    if (input.fromSnapshotId || (input.mode !== undefined && input.mode !== SESSION_MODE_NEW)) throw await modeNotSupported()
+    const mode = await resolveOpenMode(input)
 
     const quote = await readQuoteHeader(ctx.container, input.quoteId, scope)
     if (!quote) throw await quoteNotFound()
     const em = resolveEm(ctx)
-    const model = await pickModel(em, input, quote, scope)
-    const version = model.latestVersionId ? await findVersion(em, model.latestVersionId, scope) : null
-    if (!version) throw await noPublishedVersion()
+    const sourceSnapshotId = mode === SESSION_MODE_DUPLICATE ? (input.fromSnapshotId ?? null) : null
+    const plan = sourceSnapshotId
+      ? await planDuplicateSession(em, { ...input, fromSnapshotId: sourceSnapshotId }, quote, scope)
+      : await planNewSession(em, input, quote, scope)
 
     const session = em.create(ConfigurationSession, {
       tenantId: scope.tenantId,
       organizationId: scope.organizationId,
-      modelVersionId: version.id,
+      modelVersionId: plan.version.id,
       quoteId: quote.id,
-      selections: {},
+      sourceSnapshotId,
+      selections: plan.selections,
       evaluation: null,
       revision: 0,
-      mode: SESSION_MODE_NEW,
-      migration: null,
+      mode,
+      migration: plan.migration,
       status: 'open',
       createdBy: z.string().uuid().safeParse(userId).success ? userId : null,
     })
@@ -186,8 +251,17 @@ const openSessionCommand: CommandHandler<SessionOpenInput, SessionOpenResult> = 
     return {
       sessionId: session.id,
       revision: session.revision,
-      modelVersion: { id: version.id, version: version.version, hash: version.hash, modelId: model.id, modelTitle: model.title },
+      mode,
+      sourceSnapshotId,
+      modelVersion: {
+        id: plan.version.id,
+        version: plan.version.version,
+        hash: plan.version.hash,
+        modelId: plan.model.id,
+        modelTitle: plan.model.title,
+      },
       quote: { id: quote.id, number: quote.quoteNumber, customerName: quote.customerName },
+      migration: plan.migration,
     }
   },
   buildLog: async ({ result, ctx }) => {
@@ -203,7 +277,9 @@ const openSessionCommand: CommandHandler<SessionOpenInput, SessionOpenResult> = 
         quoteId: result.quote.id,
         modelVersionId: result.modelVersion.id,
         status: 'open',
-        mode: SESSION_MODE_NEW,
+        mode: result.mode,
+        sourceSnapshotId: result.sourceSnapshotId,
+        migrated: result.migration !== null,
       },
     }
   },

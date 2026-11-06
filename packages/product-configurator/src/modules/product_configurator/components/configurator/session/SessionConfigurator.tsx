@@ -21,6 +21,7 @@ import {
   SESSION_RESOURCE_KIND,
   SESSIONS_API,
   finaliseOutcomeFromResponse,
+  migrationChanges,
   quoteHref,
   runGuardedCall,
   sessionLoadFromResponse,
@@ -140,7 +141,8 @@ const STILL_FINALISING: ReadonlyArray<PanelOutcome['kind']> = ['in_progress', 'b
 const FLASH_KIND: Record<AlertStatus, FlashKind> = { error: 'error', warning: 'warning', information: 'info', success: 'success', feature: 'info' }
 
 /**
- * A session left in `finalising` (an add that did not finish, for example after a crash). "Add to quote" runs
+ * A session left in `finalising` (an add that did not finish, for example after a crash). A copy reaches
+ * `finalising` only after its rep acknowledged the changed choices, so the retry acknowledges them again. "Add to quote" runs
  * finalise again, which first adopts a line already written for it, so no second line is ever created. When the
  * server answers that the session moved on (reopened, cancelled, finalised elsewhere), the page reloads it.
  */
@@ -158,7 +160,12 @@ function FinalisingSession({ session, onReload }: { session: SessionDetail; onRe
 
   const finish = async () => {
     if (!hash) return
-    const body = { id: session.id, expectedHash: hash, revision: session.revision }
+    const body = {
+      id: session.id,
+      expectedHash: hash,
+      revision: session.revision,
+      ...(migrationChanges(session.migration).length > 0 ? { migrationAcknowledged: true } : {}),
+    }
     setBusy(true)
     try {
       const response = await runGuardedCall(
@@ -187,7 +194,7 @@ function FinalisingSession({ session, onReload }: { session: SessionDetail; onRe
         router.push(quoteHref(session.quoteId, next.snapshotId))
         return
       }
-      if (next.kind === 'session_changed') return onReload()
+      if (next.kind === 'session_changed' || next.kind === 'migration_unconfirmed') return onReload()
       if (STILL_FINALISING.includes(next.kind)) return setOutcome(next)
       const view = describeOutcome(next, { definition: session.modelVersion.definition, priceChange: null, t })
       flash(view.text, FLASH_KIND[view.status])

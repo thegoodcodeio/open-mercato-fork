@@ -18,6 +18,12 @@ export const FINALISE_FEATURES = ['product_configurator.sessions.manage', 'sales
 /** Snapshot reads by quote or by id need sales visibility of quotes. */
 export const SNAPSHOT_QUOTE_FEATURES = ['product_configurator.snapshots.view', 'sales.quotes.view'] as const
 
+/** Snapshot reads through an order (the order tab, the order items column) need sales visibility of orders instead. */
+export const SNAPSHOT_ORDER_FEATURES = ['product_configurator.snapshots.view', 'sales.orders.view'] as const
+
+/** Editing a configured line's commercial fields writes the quote line. */
+export const LINE_UPDATE_FEATURES = ['product_configurator.sessions.manage', 'sales.quotes.manage'] as const
+
 /** The quote header fields the configurator reads at request time; nothing here is stored by the module. */
 export type QuoteHeader = {
   id: string
@@ -57,7 +63,7 @@ export function tryResolve<T>(container: ServiceResolver, name: string): T | nul
   }
 }
 
-type SalesEntity = 'sales_quote' | 'sales_quote_line' | 'sales_order_line'
+type SalesEntity = 'sales_quote' | 'sales_order' | 'sales_quote_line' | 'sales_order_line' | 'sales_tax_rate'
 
 function salesEntityId(entity: SalesEntity): string {
   const entityId = getEntityIds().sales?.[entity]
@@ -134,6 +140,34 @@ export async function readQuoteHeader(container: ServiceResolver, quoteId: strin
     customerName: customerNameFromSnapshot(row.customer_snapshot),
     updatedAt: toIso(row.updated_at),
   }
+}
+
+/** Whether an order is readable in the selected organization (soft-deleted orders excluded). */
+export async function orderExists(container: ServiceResolver, orderId: string, scope: QuoteScope): Promise<boolean> {
+  const queryEngine = container.resolve('queryEngine') as QueryEngine
+  const result = await queryEngine.query<{ id: string }>(salesEntityId('sales_order'), {
+    tenantId: scope.tenantId,
+    organizationId: scope.organizationId,
+    filters: { id: { $eq: orderId } },
+    fields: ['id'],
+    page: { page: 1, pageSize: 1 },
+  })
+  return result.items[0]?.id === orderId
+}
+
+/** The numeric rate of a sales tax rate of the selected organization (soft-deleted rates excluded); null when unknown. */
+export async function readTaxRate(container: ServiceResolver, taxRateId: string, scope: QuoteScope): Promise<string | null> {
+  const queryEngine = container.resolve('queryEngine') as QueryEngine
+  const result = await queryEngine.query<{ id: string; rate?: string | number | null }>(salesEntityId('sales_tax_rate'), {
+    tenantId: scope.tenantId,
+    organizationId: scope.organizationId,
+    filters: { id: { $eq: taxRateId } },
+    fields: ['id', 'rate'],
+    page: { page: 1, pageSize: 1 },
+  })
+  const row = result.items[0]
+  if (!row || row.id !== taxRateId || row.rate === null || row.rate === undefined) return null
+  return String(row.rate)
 }
 
 export type PricingPartyKind = 'customer' | 'channel'
@@ -324,6 +358,76 @@ export async function readDocumentLines(
     })
     for (const row of result.items) lines.push(toStoredLine(row, kind))
     if (result.items.length < READ_PAGE_SIZE) return lines
+  }
+}
+
+/**
+ * Lines of one quote or order of the selected organization by id, a bounded read for callers that
+ * know which lines they need (`READ_PAGE_SIZE` ids per query).
+ */
+export async function readDocumentLinesByIds(
+  container: ServiceResolver,
+  kind: DocumentKind,
+  parentId: string,
+  ids: string[],
+  scope: QuoteScope,
+): Promise<StoredLine[]> {
+  const queryEngine = container.resolve('queryEngine') as QueryEngine
+  const column = parentColumn(kind)
+  const uniqueIds = Array.from(new Set(ids))
+  const lines: StoredLine[] = []
+  for (let start = 0; start < uniqueIds.length; start += READ_PAGE_SIZE) {
+    const chunk = uniqueIds.slice(start, start + READ_PAGE_SIZE)
+    const result = await queryEngine.query<LineRow>(salesEntityId(lineEntity(kind)), {
+      tenantId: scope.tenantId,
+      organizationId: scope.organizationId,
+      filters: { id: { $in: chunk }, [column]: { $eq: parentId } },
+      fields: [...LINE_FIELDS, column],
+      page: { page: 1, pageSize: chunk.length },
+    })
+    for (const row of result.items) lines.push(toStoredLine(row, kind))
+  }
+  return lines
+}
+
+export type QuoteLineDetails = {
+  quoteId: string | null
+  name: string | null
+  comment: string | null
+  discountPercent: string | null
+  discountAmount: string | null
+  taxRate: string | null
+}
+
+type QuoteLineDetailsRow = {
+  id: string
+  quote_id?: string | null
+  name?: string | null
+  comment?: string | null
+  discount_percent?: string | number | null
+  discount_amount?: string | number | null
+  tax_rate?: string | number | null
+}
+
+/** The commercial fields of one quote line in the selected organization, for the audit log of an edit. */
+export async function readQuoteLineDetails(container: ServiceResolver, lineId: string, scope: QuoteScope): Promise<QuoteLineDetails | null> {
+  const queryEngine = container.resolve('queryEngine') as QueryEngine
+  const result = await queryEngine.query<QuoteLineDetailsRow>(salesEntityId('sales_quote_line'), {
+    tenantId: scope.tenantId,
+    organizationId: scope.organizationId,
+    filters: { id: { $eq: lineId } },
+    fields: ['id', 'quote_id', 'name', 'comment', 'discount_percent', 'discount_amount', 'tax_rate'],
+    page: { page: 1, pageSize: 1 },
+  })
+  const row = result.items[0]
+  if (!row || row.id !== lineId) return null
+  return {
+    quoteId: row.quote_id ?? null,
+    name: row.name ?? null,
+    comment: row.comment ?? null,
+    discountPercent: toText(row.discount_percent),
+    discountAmount: toText(row.discount_amount),
+    taxRate: toText(row.tax_rate),
   }
 }
 

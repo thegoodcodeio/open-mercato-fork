@@ -1,6 +1,6 @@
 export const metadata = {
   requireAuth: true,
-  requireFeatures: ['product_configurator.snapshots.view', 'sales.quotes.view'],
+  requireFeatures: ['product_configurator.snapshots.view'],
   pageTitle: 'Configuration details',
   pageTitleKey: 'product_configurator.snapshot.pageTitle',
   pageGroup: 'Product configurator',

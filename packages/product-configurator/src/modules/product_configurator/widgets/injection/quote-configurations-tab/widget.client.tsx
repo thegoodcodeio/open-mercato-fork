@@ -11,5 +11,5 @@ export default function QuoteConfigurationsTabWidget({ context }: InjectionWidge
   const quoteId = parsed.data.documentId ?? parsed.data.record?.id ?? null
   const currencyCode = parsed.data.record?.currencyCode ?? null
   if (!quoteId || !currencyCode) return null
-  return <QuoteConfigurationsTab quoteId={quoteId} currencyCode={currencyCode} />
+  return <QuoteConfigurationsTab quoteId={quoteId} currencyCode={currencyCode} quoteUpdatedAt={parsed.data.record?.updatedAt ?? null} />
 }
