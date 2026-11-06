@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type { EntityManager } from '@mikro-orm/postgresql'
 import { makeCrudRoute, type CrudCtx } from '@open-mercato/shared/lib/crud/factory'
 import { CrudHttpError } from '@open-mercato/shared/lib/crud/errors'
+import { normalizeIsoToken } from '@open-mercato/shared/lib/crud/optimistic-lock'
 import { buildIlikeTerm } from '@open-mercato/shared/lib/db/buildIlikeTerm'
 import { findWithDecryption } from '@open-mercato/shared/lib/encryption/find'
 import { readJsonSafe } from '@open-mercato/shared/lib/http/readJsonSafe'
@@ -72,6 +73,12 @@ function readString(row: ModelRow, key: string): string | null {
   return typeof value === 'string' ? value : null
 }
 
+/** The query engine can return timestamps as Postgres text; responses and lock tokens use ISO-8601. */
+function readTimestamp(row: ModelRow, key: string): string | null {
+  const value = readString(row, key)
+  return value === null ? null : normalizeIsoToken(value)
+}
+
 function toListItem(row: ModelRow): ModelListItem {
   const item: ModelListItem = {
     id: String(row.id),
@@ -81,8 +88,8 @@ function toListItem(row: ModelRow): ModelListItem {
     title: readString(row, 'title') ?? '',
     currencyCode: readString(row, 'currency_code') ?? '',
     latestVersionId: readString(row, 'latest_version_id'),
-    createdAt: readString(row, 'created_at'),
-    updatedAt: readString(row, 'updated_at'),
+    createdAt: readTimestamp(row, 'created_at'),
+    updatedAt: readTimestamp(row, 'updated_at'),
     draftHash: readString(row, 'draft_hash') ?? '',
   }
   if ('draft_definition' in row) item.draftDefinition = row.draft_definition

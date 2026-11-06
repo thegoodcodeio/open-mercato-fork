@@ -7,9 +7,10 @@ import { ORGANIZATION_SCOPE_REQUIRED_ERROR_CODE } from '@open-mercato/shared/lib
 import { findOneWithDecryption } from '@open-mercato/shared/lib/encryption/find'
 import { resolveTranslations } from '@open-mercato/shared/lib/i18n/server'
 import type { CrudEventsConfig, CrudIndexerConfig } from '@open-mercato/shared/lib/crud/types'
-import { ConfigurationModel } from '../data/entities'
+import { ConfigurationModel, ConfigurationSession } from '../data/entities'
 
 export const MODEL_RESOURCE_KIND = 'product_configurator.model'
+export const SESSION_RESOURCE_KIND = 'product_configurator.session'
 export const MODEL_ENTITY_TYPE = 'product_configurator:configuration_model'
 
 export type ModelScope = { tenantId: string; organizationId: string }
@@ -34,20 +35,38 @@ export function commandTenantId(ctx: CommandRuntimeContext): string | null {
   return ctx.auth ? (ctx.auth.tenantId ?? null) : (ctx.organizationScope?.tenantId ?? null)
 }
 
-/** Model writes need one tenant and one selected organization; "all organizations" is rejected. */
-export async function resolveModelScope(ctx: CommandRuntimeContext): Promise<ModelScope> {
+async function resolveSingleOrganizationScope(
+  ctx: CommandRuntimeContext,
+  message: { key: string; fallback: string },
+): Promise<ModelScope> {
   const tenantId = commandTenantId(ctx)
   const organizationId = ctx.selectedOrganizationId ?? null
   if (!tenantId || !organizationId) {
     const { translate } = await resolveTranslations()
     throw new CrudHttpError(400, {
-      error: translate('product_configurator.errors.organization_scope_required', 'Select an organization to manage configuration models.'),
+      error: translate(message.key, message.fallback),
       code: ORGANIZATION_SCOPE_REQUIRED_ERROR_CODE,
     })
   }
   ensureTenantScope(ctx, tenantId)
   ensureOrganizationScope(ctx, organizationId)
   return { tenantId, organizationId }
+}
+
+/** Model writes need one tenant and one selected organization; "all organizations" is rejected. */
+export async function resolveModelScope(ctx: CommandRuntimeContext): Promise<ModelScope> {
+  return resolveSingleOrganizationScope(ctx, {
+    key: 'product_configurator.errors.organization_scope_required',
+    fallback: 'Select an organization to manage configuration models.',
+  })
+}
+
+/** Sessions live in the selected organization, like their quote; "all organizations" is rejected. */
+export async function resolveSessionScope(ctx: CommandRuntimeContext): Promise<ModelScope> {
+  return resolveSingleOrganizationScope(ctx, {
+    key: 'product_configurator.errors.session_organization_scope_required',
+    fallback: 'Select an organization to configure products.',
+  })
 }
 
 export function resolveReplayScope(ctx: CommandRuntimeContext, snapshot: ModelScope): ModelScope {
@@ -104,4 +123,35 @@ export function toModelAuditSnapshot(model: ConfigurationModel): ModelAuditSnaps
     draftHash: model.draftHash,
     latestVersionId: model.latestVersionId ?? null,
   }
+}
+
+export async function findSession(
+  em: EntityManager,
+  id: string,
+  scope: ModelScope,
+  options?: FindOneOptions<ConfigurationSession>,
+): Promise<ConfigurationSession | null> {
+  return findOneWithDecryption(
+    em,
+    ConfigurationSession,
+    { id, tenantId: scope.tenantId, organizationId: scope.organizationId },
+    options,
+    scope,
+  )
+}
+
+export async function sessionNotFound(): Promise<CrudHttpError> {
+  const { translate } = await resolveTranslations()
+  return new CrudHttpError(404, {
+    error: translate('product_configurator.errors.session_not_found', 'Configuration session not found.'),
+    code: 'session_not_found',
+  })
+}
+
+export async function quoteNotFound(): Promise<CrudHttpError> {
+  const { translate } = await resolveTranslations()
+  return new CrudHttpError(404, {
+    error: translate('product_configurator.errors.quote_not_found', 'Quote not found.'),
+    code: 'quote_not_found',
+  })
 }

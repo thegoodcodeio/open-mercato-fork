@@ -10,6 +10,7 @@ export type StudioTabId =
   | 'rules'
   | 'bom'
   | 'dependencies'
+  | 'test'
   | 'advanced'
 
 /** The in-memory draft. It always passes `definitionSchema`; cross-references are checked by Validate. */
@@ -50,6 +51,8 @@ export type StudioTabProps = {
    * row editor opened to the row it saves, so it does not write back a key that was renamed meanwhile.
    */
   referenceChanges?: readonly DefinitionUpdater[]
+  /** True when the draft or a tab holds edits that are not saved yet (the Test tab says it tests the saved draft). */
+  unsavedChanges?: boolean
   /** True while a save or publish runs; tabs must not change the draft then. */
   readOnly: boolean
   /** Issues of the last validation report that point at this tab. */

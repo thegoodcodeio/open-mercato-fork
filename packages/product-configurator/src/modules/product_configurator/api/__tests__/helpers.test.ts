@@ -23,7 +23,7 @@ jest.mock('@open-mercato/shared/lib/i18n/server', () => ({
   resolveTranslations: async () => ({ translate: (_key: string, fallback?: string) => fallback ?? _key }),
 }))
 
-import { resolveRouteContext, type RouteContext } from '../helpers'
+import { readLimitedJsonObject, resolveRouteContext, type RouteContext } from '../helpers'
 
 const request = () => new Request('http://localhost/api/product_configurator/models/validate', { method: 'POST' })
 
@@ -79,5 +79,50 @@ describe('resolveRouteContext', () => {
 
     expect(response.status).toBe(400)
     await expect(response.json()).resolves.toMatchObject({ code: 'organization_scope_required' })
+  })
+})
+
+describe('readLimitedJsonObject', () => {
+  it('answers 413 from a content-length above the limit without reading the body', async () => {
+    const req = new Request('http://localhost/api/product_configurator/sessions/evaluate', {
+      method: 'POST',
+      headers: { 'content-length': '65537' },
+      body: '{}',
+    })
+    const text = jest.spyOn(req, 'text')
+
+    const response = (await readLimitedJsonObject(req, 65_536)) as Response
+
+    expect(response.status).toBe(413)
+    await expect(response.json()).resolves.toMatchObject({ code: 'payload_too_large' })
+    expect(text).not.toHaveBeenCalled()
+  })
+
+  it('answers 413 for a larger body without content-length and reads a body within the limit', async () => {
+    const tooLarge = new Request('http://localhost/x', { method: 'POST', body: JSON.stringify({ text: 'x'.repeat(100) }) })
+    tooLarge.headers.delete('content-length')
+    expect(((await readLimitedJsonObject(tooLarge, 50)) as Response).status).toBe(413)
+
+    const small = new Request('http://localhost/x', { method: 'POST', body: JSON.stringify({ id: 'a' }) })
+    await expect(readLimitedJsonObject(small, 50)).resolves.toEqual({ id: 'a' })
+  })
+
+  it('stops reading a chunked body at the limit and never pulls the rest of the stream', async () => {
+    const encoder = new TextEncoder()
+    let pulled = 0
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1
+        controller.enqueue(encoder.encode(pulled === 1 ? '{"text":"' : 'x'.repeat(40)))
+      },
+    })
+    const init: RequestInit & { duplex: 'half' } = { method: 'POST', body: stream, duplex: 'half' }
+    const chunked = new Request('http://localhost/x', init)
+    expect(((await readLimitedJsonObject(chunked, 100)) as Response).status).toBe(413)
+    expect(pulled).toBeLessThanOrEqual(5)
+
+    const multiByte = new Request('http://localhost/x', { method: 'POST', body: JSON.stringify({ name: 'Żółw' }) })
+    await expect(readLimitedJsonObject(multiByte, 50)).resolves.toEqual({ name: 'Żółw' })
+    await expect(readLimitedJsonObject(new Request('http://localhost/x', { method: 'POST' }), 50)).resolves.toEqual({})
   })
 })

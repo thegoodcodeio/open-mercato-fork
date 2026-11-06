@@ -5,18 +5,60 @@ type ParsedDecimal = { coefficient: bigint; scale: number }
 
 const DECIMAL_PATTERN = /^([+-])?(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/
 
-export function parseDecimal(input: string | number): ParsedDecimal {
+/** Covers every finite JS number (5e-324 to 1.8e308); a larger exponent would only make BigInt powers explode. */
+const MAX_DECIMAL_EXPONENT = 324
+
+/** Longer than any JS number or `numeric(18,4)` text; longer input is refused before any regex runs on it. */
+const MAX_DECIMAL_LENGTH = 64
+
+type DecimalParts = { negative: boolean; digits: string; fractionLength: number; exponent: number }
+
+function matchDecimal(input: string | number): DecimalParts {
   if (typeof input === 'number' && !Number.isFinite(input)) {
     throw new Error(`[internal] product_configurator: non-finite decimal ${input}`)
   }
-  const match = DECIMAL_PATTERN.exec(String(input).trim())
+  const text = String(input)
+  if (text.length > MAX_DECIMAL_LENGTH) {
+    throw new Error(`[internal] product_configurator: decimal longer than ${MAX_DECIMAL_LENGTH} characters`)
+  }
+  const match = DECIMAL_PATTERN.exec(text.trim())
   if (!match) throw new Error(`[internal] product_configurator: invalid decimal ${String(input)}`)
   const [, sign, whole, fraction = '', exponent = '0'] = match
-  const digits = BigInt(`${whole}${fraction}`)
-  const scale = fraction.length - Number(exponent)
-  const signed = sign === '-' ? -digits : digits
+  const parsedExponent = Number(exponent)
+  if (Math.abs(parsedExponent) > MAX_DECIMAL_EXPONENT) {
+    throw new Error(`[internal] product_configurator: decimal exponent out of range ${String(input)}`)
+  }
+  return { negative: sign === '-', digits: `${whole}${fraction}`, fractionLength: fraction.length, exponent: parsedExponent }
+}
+
+export function parseDecimal(input: string | number): ParsedDecimal {
+  const { negative, digits, fractionLength, exponent } = matchDecimal(input)
+  const unsigned = BigInt(digits)
+  const scale = fractionLength - exponent
+  const signed = negative ? -unsigned : unsigned
   if (scale >= 0) return { coefficient: signed, scale }
   return { coefficient: signed * 10n ** BigInt(-scale), scale: 0 }
+}
+
+/** `digits` x 10^`exponent` with no leading or trailing zero digits; zero is `0e0` without a sign. */
+function normalizedDecimal(input: string | number): string {
+  const { negative, digits, fractionLength, exponent } = matchDecimal(input)
+  const significant = digits.replace(/^0+/, '')
+  let end = significant.length
+  while (end > 0 && significant[end - 1] === '0') end -= 1
+  const trimmed = significant.slice(0, end)
+  if (!trimmed) return '0e0'
+  const power = exponent - fractionLength + (significant.length - trimmed.length)
+  return `${negative ? '-' : ''}${trimmed}e${power}`
+}
+
+/** Exact decimal equality at any scale (`1` equals `1.0000`, `1.00004` does not); false for anything that is not a decimal. */
+export function sameDecimal(left: string | number, right: string | number): boolean {
+  try {
+    return normalizedDecimal(left) === normalizedDecimal(right)
+  } catch {
+    return false
+  }
 }
 
 export function divideHalfUp(numerator: bigint, denominator: bigint): bigint {

@@ -405,3 +405,82 @@ export type ModelCreateInput = z.infer<typeof modelCreateSchema>
 export type ModelUpdateInput = z.infer<typeof modelUpdateSchema>
 export type ModelIdInput = z.infer<typeof modelIdSchema>
 export type ModelListQuery = z.infer<typeof modelListQuerySchema>
+
+/** A date alone (`2026-10-27`) means the start of that day in UTC. */
+export const previewContextSchema = z
+  .object({
+    channelId: z.string().uuid().nullable().optional(),
+    customerId: z.string().uuid().nullable().optional(),
+    date: z.union([z.iso.date(), z.iso.datetime({ offset: true })]).nullable().optional(),
+  })
+  .strict()
+
+export const modelPreviewSchema = z.object({
+  id: z.string().uuid(),
+  selections: rawSelectionsSchema.default({}),
+  context: previewContextSchema.optional(),
+})
+
+export type PreviewContextInput = z.infer<typeof previewContextSchema>
+export type ModelPreviewInput = z.infer<typeof modelPreviewSchema>
+
+export const SESSION_STATUSES = ['open', 'finalising', 'finalised', 'cancelled'] as const
+export const SESSION_IN_PROGRESS_STATUSES = ['open', 'finalising'] as const
+export const SESSION_MODE_NEW = 'new'
+
+/** `mode` and `fromSnapshotId` are accepted as input so the command can refuse modes it does not support with `mode_not_supported`. */
+export const sessionOpenSchema = z.object({
+  quoteId: z.string().uuid(),
+  modelId: z.string().uuid().optional(),
+  fromSnapshotId: z.string().uuid().optional(),
+  mode: z.string().trim().min(1).max(50).optional(),
+})
+
+export const sessionEvaluateSchema = z.object({
+  id: z.string().uuid(),
+  selections: rawSelectionsSchema,
+  revision: z.number().int().min(0),
+})
+
+export const sessionIdSchema = z.object({ id: z.string().uuid() })
+
+export const sessionsQuerySchema = z
+  .object({
+    id: z.string().uuid().optional(),
+    quoteId: z.string().uuid().optional(),
+    status: z
+      .string()
+      .optional()
+      .transform((value) => Array.from(new Set((value ?? '').split(',').map((status) => status.trim()).filter((status) => status.length > 0))))
+      .pipe(z.array(z.enum(SESSION_STATUSES))),
+  })
+  .refine((query) => Boolean(query.id) !== Boolean(query.quoteId), { message: 'id_or_quote_id_required' })
+
+export type SessionOpenInput = z.infer<typeof sessionOpenSchema>
+export type SessionEvaluateInput = z.infer<typeof sessionEvaluateSchema>
+export type SessionIdInput = z.infer<typeof sessionIdSchema>
+export type SessionsQuery = z.infer<typeof sessionsQuerySchema>
+
+export const sessionFinaliseSchema = z.object({
+  id: z.string().uuid(),
+  expectedHash: z.string().trim().min(1).max(128),
+  revision: z.number().int().min(0),
+  migrationAcknowledged: z.boolean().optional(),
+})
+
+export const SNAPSHOTS_MAX_IDS = 100
+
+export const snapshotsQuerySchema = z
+  .object({
+    id: z.string().uuid().optional(),
+    quoteId: z.string().uuid().optional(),
+    ids: z
+      .string()
+      .optional()
+      .transform((value) => Array.from(new Set((value ?? '').split(',').map((id) => id.trim()).filter((id) => id.length > 0))))
+      .pipe(z.array(z.string().uuid()).max(SNAPSHOTS_MAX_IDS)),
+  })
+  .refine((query) => Boolean(query.id) !== Boolean(query.quoteId), { message: 'id_or_quote_id_required' })
+
+export type SessionFinaliseInput = z.infer<typeof sessionFinaliseSchema>
+export type SnapshotsQuery = z.infer<typeof snapshotsQuerySchema>
