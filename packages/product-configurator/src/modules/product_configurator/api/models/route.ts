@@ -179,7 +179,11 @@ const crud = makeCrudRoute<unknown, unknown, ModelListQuery>({
       commandId: 'product_configurator.models.update',
       schema: rawBodySchema,
       mapInput: ({ raw }) => parseBody(modelUpdateSchema, raw),
-      response: ({ result }) => ({ id: result?.id ?? null, updatedAt: result?.updatedAt ?? null }),
+      response: ({ result }) => ({
+        id: result?.id ?? null,
+        updatedAt: result?.updatedAt ?? null,
+        draftHash: result?.draftHash ?? null,
+      }),
     },
     delete: {
       commandId: 'product_configurator.models.delete',
@@ -242,7 +246,14 @@ export const openApi = createProductConfiguratorCrudOpenApi({
   },
   update: {
     schema: z.object({ id: z.string().uuid(), title: z.string().optional(), draftDefinition: opaqueDefinitionSchema.optional() }),
-    responseSchema: z.object({ id: z.string().uuid().nullable(), updatedAt: z.string().nullable() }),
+    responseSchema: z.object({
+      id: z.string().uuid().nullable(),
+      updatedAt: z.string().nullable(),
+      draftHash: z
+        .string()
+        .nullable()
+        .describe('Hash of the saved draft. Equals `latestVersion.hash` when the draft matches the latest published version.'),
+    }),
     description:
       'Saves the title and/or the draft definition. Send the optimistic-lock header with the last seen `updatedAt`. 400 `invalid_definition` when the draft is too large, too deeply nested or changes the model currency.',
   },

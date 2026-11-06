@@ -278,7 +278,9 @@ function toDraftSnapshot(model: ConfigurationModel): ModelDraftSnapshot {
   }
 }
 
-const updateModelCommand: CommandHandler<ModelUpdateInput, { id: string; updatedAt: string }> = {
+export type ModelUpdateResult = { id: string; updatedAt: string; draftHash: string }
+
+const updateModelCommand: CommandHandler<ModelUpdateInput, ModelUpdateResult> = {
   id: 'product_configurator.models.update',
   prepareSnapshotInsideTransaction: true,
   async prepare(rawInput, ctx) {
@@ -309,7 +311,7 @@ const updateModelCommand: CommandHandler<ModelUpdateInput, { id: string; updated
       events: modelCrudEvents,
       indexer: modelCrudIndexer,
     })
-    return { id: model.id, updatedAt: model.updatedAt.toISOString() }
+    return { id: model.id, updatedAt: model.updatedAt.toISOString(), draftHash: model.draftHash }
   },
   captureAfter: async (_input, result, ctx) => {
     const scope = await resolveModelScope(ctx)

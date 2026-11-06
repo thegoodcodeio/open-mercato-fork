@@ -213,9 +213,10 @@ describe('product_configurator.models.create', () => {
 })
 
 describe('product_configurator.models.update', () => {
-  const update = handler<{ id: string; title?: string; draftDefinition?: Record<string, unknown> }, { id: string; updatedAt: string }>(
-    'product_configurator.models.update',
-  )
+  const update = handler<
+    { id: string; title?: string; draftDefinition?: Record<string, unknown> },
+    { id: string; updatedAt: string; draftHash: string }
+  >('product_configurator.models.update')
 
   it('returns 404 for a model outside the scope', async () => {
     const { em } = makeEm()
@@ -274,7 +275,20 @@ describe('product_configurator.models.update', () => {
     expect(model.title).toBe('Pump XL')
     expect(model.draftDefinition).toEqual(draftDefinition)
     expect(model.draftHash).toBe(computeDraftHash(draftDefinition))
+    expect(result.draftHash).toBe(model.draftHash)
     expect(em.flush).toHaveBeenCalled()
+  })
+
+  it('returns the unchanged draft hash when only the title is saved', async () => {
+    const model = makeModel()
+    const hashBefore = model.draftHash
+    const { em } = makeEm()
+    const { ctx } = makeCtx(em, { lockHeader: UPDATED_AT.toISOString() })
+    findOneWithDecryptionMock.mockResolvedValue(model)
+
+    const result = await update.execute({ id: MODEL_ID, title: 'Pump XL' }, ctx)
+
+    expect(result.draftHash).toBe(hashBefore)
   })
 
   it('rejects a draft that changes the model currency', async () => {
