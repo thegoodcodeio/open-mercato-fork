@@ -7,6 +7,7 @@ import {
   convertedQuoteLinkFromResponse,
   evaluateOutcomeFromResponse,
   finaliseOutcomeFromResponse,
+  migrationChanges,
   quoteHref,
   sessionLoadFromResponse,
 } from '../session/sessionApi'
@@ -170,5 +171,32 @@ describe('session API mapping', () => {
     expect(convertedQuoteLinkFromResponse(200, { items: [] }, QUOTE_ID)).toEqual({ kind: 'orders', href: '/backend/sales/orders' })
     expect(convertedQuoteLinkFromResponse(403, { error: 'Forbidden' }, QUOTE_ID)).toEqual({ kind: 'quotes', href: '/backend/sales/quotes' })
     expect(convertedQuoteLinkFromResponse(200, { unexpected: true }, QUOTE_ID)).toEqual({ kind: 'quotes', href: '/backend/sales/quotes' })
+  })
+
+  describe('copies', () => {
+    const migration = {
+      fromVersion: { id: 'v1', version: 1 },
+      toVersion: { id: 'v2', version: 2 },
+      kept: [{ featureKey: 'motor', label: 'Motor', oldValue: 'heavy', oldDisplay: 'Heavy', reason: 'kept' }],
+      dropped: [{ featureKey: 'hose', label: 'Hose', oldValue: 'long', oldDisplay: 'Long', reason: 'feature_removed' }],
+      reset: [{ featureKey: 'color', label: 'Colour', oldValue: 'green', oldDisplay: 'Green', reason: 'option_removed' }],
+    }
+
+    it('reads the copy source and the migration of a copied session, and defaults them for a new one', () => {
+      const copy = sessionLoadFromResponse(200, detail({ mode: 'duplicate', sourceSnapshotId: 'snap-1', sourceLineName: 'Pump (farm)', migration }))
+      expect(copy.status === 'ready' && copy.session).toMatchObject({ mode: 'duplicate', sourceSnapshotId: 'snap-1', sourceLineName: 'Pump (farm)', migration })
+      const fresh = sessionLoadFromResponse(200, detail({ mode: undefined, migration: undefined }))
+      expect(fresh.status === 'ready' && fresh.session).toMatchObject({ mode: 'new', sourceSnapshotId: null, sourceLineName: null, migration: null })
+    })
+
+    it('lists only the choices that moved', () => {
+      expect(migrationChanges(null)).toEqual([])
+      expect(migrationChanges(migration).map((item) => item.featureKey)).toEqual(['color', 'hose'])
+    })
+
+    it('maps migration_unconfirmed to the copy review with the migration to show', () => {
+      expect(finaliseOutcomeFromResponse(422, { code: 'migration_unconfirmed', migration })).toEqual({ kind: 'migration_unconfirmed', migration })
+      expect(finaliseOutcomeFromResponse(422, { code: 'migration_unconfirmed' })).toEqual({ kind: 'migration_unconfirmed', migration: null })
+    })
   })
 })

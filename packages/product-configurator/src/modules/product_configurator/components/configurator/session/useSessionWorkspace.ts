@@ -26,10 +26,12 @@ import {
   SESSIONS_API,
   evaluateOutcomeFromResponse,
   finaliseOutcomeFromResponse,
+  migrationChanges,
   quoteHref,
   runGuardedCall,
   sessionLoadFromResponse,
   type PanelOutcome,
+  type SelectionMigration,
   type SessionDetail,
 } from './sessionApi'
 
@@ -118,6 +120,8 @@ export function useSessionWorkspace(session: SessionDetail, onSessionMoved: () =
   const [added, setAdded] = React.useState(false)
   const [priceChange, setPriceChange] = React.useState<PriceChange | null>(null)
   const [finaliseConflict, setFinaliseConflict] = React.useState<SessionConflict | null>(null)
+  const [review, setReview] = React.useState<SelectionMigration | null>(null)
+  const acknowledgedRef = React.useRef(false)
 
   const { failure, evaluation: shownEvaluation } = state
   const conflict = React.useMemo<SessionConflict | null>(
@@ -136,11 +140,21 @@ export function useSessionWorkspace(session: SessionDetail, onSessionMoved: () =
   const finalise = React.useCallback(
     async (expectedHash: string) => {
       const shown = state.evaluation
+      if (!acknowledgedRef.current && migrationChanges(session.migration).length > 0) {
+        setReview(session.migration)
+        return
+      }
       setFinalising(true)
       setOutcome(null)
       try {
-        const response = await post(FINALISE_API, { id: session.id, expectedHash, revision: revisionRef.current })
+        const body = { id: session.id, expectedHash, revision: revisionRef.current, ...(acknowledgedRef.current ? { migrationAcknowledged: true } : {}) }
+        const response = await post(FINALISE_API, body)
         const next = finaliseOutcomeFromResponse(response.status, response.result)
+        if (next.kind === 'migration_unconfirmed') {
+          acknowledgedRef.current = false
+          setReview(next.migration ?? session.migration)
+          return
+        }
         if (next.kind === 'added') {
           const title = session.modelVersion.modelTitle ?? ''
           flash(
@@ -176,8 +190,19 @@ export function useSessionWorkspace(session: SessionDetail, onSessionMoved: () =
         setFinalising(false)
       }
     },
-    [money, onSessionMoved, post, router, session.id, session.modelVersion.modelTitle, session.quoteId, state, t],
+    [money, onSessionMoved, post, router, session.id, session.migration, session.modelVersion.modelTitle, session.quoteId, state, t],
   )
+
+  /** The rep reviewed the copied choices that moved: adds the copy, acknowledging the migration from now on. */
+  const confirmReview = React.useCallback(() => {
+    const hash = state.evaluation?.hash
+    if (!hash) return
+    acknowledgedRef.current = true
+    setReview(null)
+    void finalise(hash)
+  }, [finalise, state.evaluation])
+
+  const closeReview = React.useCallback(() => setReview(null), [])
 
   const resolveConflict = React.useCallback(
     (choice: 'keep' | 'apply') => {
@@ -240,6 +265,9 @@ export function useSessionWorkspace(session: SessionDetail, onSessionMoved: () =
     priceChange,
     conflict,
     finalise,
+    review,
+    confirmReview,
+    closeReview,
     resolveConflict,
     dismissOutcome,
     discard,

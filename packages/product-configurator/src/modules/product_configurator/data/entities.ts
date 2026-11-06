@@ -95,7 +95,7 @@ export type ConfigurationSessionMode = 'new' | 'duplicate'
 @Index({ name: 'product_configurator_sessions_quote_idx', properties: ['tenantId', 'organizationId', 'quoteId'] })
 @Index({ name: 'product_configurator_sessions_status_idx', properties: ['tenantId', 'organizationId', 'status'] })
 export class ConfigurationSession {
-  [OptionalProps]?: 'evaluation' | 'revision' | 'mode' | 'migration' | 'status' | 'createdBy' | 'createdAt' | 'updatedAt'
+  [OptionalProps]?: 'sourceSnapshotId' | 'evaluation' | 'revision' | 'mode' | 'migration' | 'status' | 'createdBy' | 'createdAt' | 'updatedAt'
 
   @PrimaryKey({ type: 'uuid', defaultRaw: 'gen_random_uuid()' })
   id!: string
@@ -111,6 +111,9 @@ export class ConfigurationSession {
 
   @Property({ name: 'quote_id', type: 'uuid' })
   quoteId!: string
+
+  @Property({ name: 'source_snapshot_id', type: 'uuid', nullable: true })
+  sourceSnapshotId?: string | null
 
   @Property({ name: 'selections', type: 'json' })
   selections!: Record<string, unknown>

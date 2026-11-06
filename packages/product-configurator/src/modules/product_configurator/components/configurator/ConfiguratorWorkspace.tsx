@@ -38,6 +38,8 @@ type WorkspaceLayoutProps = {
   renderSummaryNotice?: (state: Omit<WorkspaceActionState, 'placement'>) => React.ReactNode
   /** Locks every field, for example while the configuration is being added. */
   readOnly?: boolean
+  /** Notes shown under fields, keyed by feature (the reset markers of a copy). */
+  fieldNotes?: Readonly<Record<string, string>>
 }
 
 export type ConfiguratorWorkspaceProps = WorkspaceLayoutProps & {
@@ -62,6 +64,7 @@ export function ConfiguratorWorkspaceView({
   messagesFooter,
   renderSummaryNotice,
   readOnly = false,
+  fieldNotes,
 }: WorkspaceLayoutProps & { state: ConfiguratorEvaluationState }) {
   const t = useT()
   const locale = useLocale()
@@ -187,6 +190,7 @@ export function ConfiguratorWorkspaceView({
                     resetGeneration={state.resetGeneration}
                     onChange={(value) => state.setSelection(feature.key, value)}
                     onInvalidChange={(invalid) => setInvalid(feature.key, invalid)}
+                    note={fieldNotes?.[feature.key] ?? null}
                   />
                 ))}
               </div>

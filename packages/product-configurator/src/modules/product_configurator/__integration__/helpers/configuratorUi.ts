@@ -1,6 +1,8 @@
 import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test'
-import { uniqueSuffix } from './fixtures'
-import { Cleanup, createPrice, createPriceKind, createProduct, createPublishedModel, createQuote, openSessionId } from './sessions'
+import { getTokenContext } from '@open-mercato/core/helpers/integration/generalFixtures'
+import { finaliseOk } from './finalise'
+import { publishModel, readModel, saveModel, uniqueSuffix } from './fixtures'
+import { Cleanup, createPrice, createPriceKind, createProduct, createPublishedModel, createQuote, evaluateOk, openSessionId } from './sessions'
 
 export const QUOTE_TAB_ID = 'product_configurator.injection.quote-configurations-tab'
 
@@ -188,4 +190,65 @@ export async function startConfiguration(page: Page, tab: Locator, modelTitle: s
   const match = /configure\/([0-9a-f-]{36})/.exec(page.url())
   if (!match) throw new Error(`[internal] no configuration session id in ${page.url()}`)
   return match[1]
+}
+
+export const ORDER_TAB_ID = 'product_configurator.injection.order-configurations-tab'
+
+export function orderUrl(orderId: string): string {
+  return `/backend/sales/orders/${orderId}`
+}
+
+/** Signs the browser in with an API token (e.g. a `createUserWithFeatures` user), in the token's organization. */
+export async function signInWithToken(page: Page, token: string): Promise<void> {
+  const baseUrl = process.env.BASE_URL
+  expect(baseUrl, 'the integration base URL is set').toBeTruthy()
+  const url = baseUrl as string
+  const { tenantId, organizationId } = getTokenContext(token)
+  await page.context().addCookies([
+    { name: 'auth_token', value: token, url, sameSite: 'Lax' },
+    { name: 'om_selected_tenant', value: tenantId, url, sameSite: 'Lax' },
+    { name: 'om_selected_org', value: organizationId, url, sameSite: 'Lax' },
+    { name: 'om_demo_notice_ack', value: 'ack', url },
+    { name: 'om_cookie_notice_ack', value: 'ack', url },
+    { name: 'om_feedback_suppress', value: '1', url },
+  ])
+}
+
+export async function openOrderConfigurations(page: Page, orderId: string): Promise<Locator> {
+  await page.goto(orderUrl(orderId), { waitUntil: 'domcontentloaded' })
+  await page.locator(`[data-tab-id="${ORDER_TAB_ID}"]`).click({ timeout: 90_000 })
+  const tab = page.getByTestId('order-configurations-tab')
+  await expect(tab).toBeVisible({ timeout: 30_000 })
+  return tab
+}
+
+export type FinalisedFrame = { sessionId: string; snapshotId: string; quoteLineId: string; netPrice: string }
+
+/** Configures the frame model on its quote through the API and adds it as a line. */
+export async function finaliseFrame(
+  request: APIRequestContext,
+  token: string,
+  cleanup: Cleanup,
+  fixture: FrameFixture,
+  selections: Record<string, unknown> = {},
+): Promise<FinalisedFrame> {
+  const sessionId = await openSessionId(request, token, cleanup, { quoteId: fixture.quoteId, modelId: fixture.modelId })
+  const evaluated = await evaluateOk(request, token, { id: sessionId, revision: 0, selections })
+  const added = await finaliseOk(request, token, { id: sessionId, expectedHash: evaluated.evaluation.hash, revision: evaluated.revision })
+  return { sessionId, snapshotId: added.snapshotId, quoteLineId: added.quoteLineId, netPrice: evaluated.evaluation.netPrice }
+}
+
+/** Saves the model draft changed by `change` and publishes it as the next version. */
+export async function publishChangedDraft(
+  request: APIRequestContext,
+  token: string,
+  modelId: string,
+  change: (definition: Record<string, unknown>) => Record<string, unknown>,
+): Promise<void> {
+  const current = await readModel(request, token, modelId)
+  const saved = await saveModel(request, token, { id: modelId, updatedAt: current.updatedAt, draftDefinition: change(current.draftDefinition) })
+  expect(saved.status(), `PUT model should return 200: ${await saved.text()}`).toBe(200)
+  const draft = await readModel(request, token, modelId)
+  const published = await publishModel(request, token, modelId, draft.updatedAt)
+  expect(published.status(), `publish should return 200: ${await published.text()}`).toBe(200)
 }

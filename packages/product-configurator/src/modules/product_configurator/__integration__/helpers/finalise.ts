@@ -88,15 +88,26 @@ export async function convertQuote(request: APIRequestContext, token: string, cl
   return orderId
 }
 
-export async function createTaxRate(request: APIRequestContext, token: string, cleanup: Cleanup, rate: number): Promise<string> {
+export async function createTaxRate(
+  request: APIRequestContext,
+  token: string,
+  cleanup: Cleanup,
+  rate: number,
+  options: RequestOptions = {},
+): Promise<string> {
   const suffix = uniqueSuffix()
-  const response = await apiRequest(request, 'POST', '/api/sales/tax-rates', {
-    token,
-    data: { name: `QA PCFG VAT ${suffix}`, code: `qa-pcfg-vat-${suffix}`.toLowerCase(), rate },
-  })
+  const data = { name: `QA PCFG VAT ${suffix}`, code: `qa-pcfg-vat-${suffix}`.toLowerCase(), rate }
+  const response = options.selectedOrgId
+    ? await apiRequestWithSelectedOrg(request, 'POST', '/api/sales/tax-rates', { token, selectedOrgId: options.selectedOrgId, data })
+    : await apiRequest(request, 'POST', '/api/sales/tax-rates', { token, data })
   expect(response.status(), `POST /api/sales/tax-rates failed: ${await response.text()}`).toBe(201)
   const id = expectId((await readJsonSafe<{ id?: string }>(response))?.id, 'tax rate id')
-  cleanup.add(() => apiRequest(request, 'DELETE', `/api/sales/tax-rates?id=${encodeURIComponent(id)}`, { token }))
+  const path = `/api/sales/tax-rates?id=${encodeURIComponent(id)}`
+  cleanup.add(() =>
+    options.selectedOrgId
+      ? apiRequestWithSelectedOrg(request, 'DELETE', path, { token, selectedOrgId: options.selectedOrgId })
+      : apiRequest(request, 'DELETE', path, { token }),
+  )
   return id
 }
 
