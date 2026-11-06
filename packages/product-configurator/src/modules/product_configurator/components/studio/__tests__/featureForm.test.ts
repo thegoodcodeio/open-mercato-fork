@@ -122,4 +122,13 @@ describe('feature row editor form', () => {
     const second = formToFeature({ ...values, defaultValue: '3' }, [])
     expect(second).toEqual({ ok: false, errors: { key: FEATURE_ERROR_KEYS.invalidKey } })
   })
+
+  it('needs a number default inside the range and on the step', () => {
+    const values = { ...featureToForm(undefined, 10), label: 'Outreach', key: 'outreach', type: 'number' as const, min: '7', max: '12', step: '0.5' }
+    expect(formToFeature({ ...values, defaultValue: '8.3' }, [])).toEqual({ ok: false, errors: { default: FEATURE_ERROR_KEYS.defaultOffStep } })
+    expect(formToFeature({ ...values, defaultValue: '13' }, [])).toEqual({ ok: false, errors: { default: FEATURE_ERROR_KEYS.defaultOutOfRange } })
+    expect(formToFeature({ ...values, defaultValue: '6.5' }, [])).toEqual({ ok: false, errors: { default: FEATURE_ERROR_KEYS.defaultOutOfRange } })
+    const valid = formToFeature({ ...values, defaultValue: '8.5' }, [])
+    expect(valid.ok && valid.feature.default).toBe(8.5)
+  })
 })

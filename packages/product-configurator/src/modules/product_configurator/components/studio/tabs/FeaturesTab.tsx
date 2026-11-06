@@ -16,7 +16,7 @@ import { describeConditions, featureValueOptions } from '../conditionRowsModel'
 import { lookupName } from '../names'
 import { problemCountLabel } from '../pluralLabel'
 import { FeatureEditor } from './FeatureEditor'
-import { applyReferenceChanges, useReferenceChangesSince } from './rowEditorSession'
+import { applyReferenceChanges, useReferenceChangesSince, useRevealRowEditor } from './rowEditorSession'
 import { nextFeatureOrder } from './featureForm'
 import { STUDIO_NEW_ROW_KEY, type StudioDefinition, type StudioTabProps } from './types'
 
@@ -81,9 +81,7 @@ export function FeaturesTab({
   const editorRef = React.useRef<HTMLDivElement>(null)
   const changesSinceOpen = useReferenceChangesSince(selectedKey, referenceChanges)
 
-  React.useEffect(() => {
-    if (editorOpen) editorRef.current?.scrollIntoView?.({ block: 'nearest' })
-  }, [editorOpen, selectedKey])
+  useRevealRowEditor(editorRef, editorOpen, selectedKey)
 
   const removeFeature = React.useCallback(
     async (feature: Feature) => {
@@ -184,30 +182,32 @@ export function FeaturesTab({
 
   return (
     <div className="space-y-4">
-      <DataTable<Feature>
-        embedded
-        title={t('product_configurator.studio.features.title', 'Features')}
-        columns={columns}
-        data={features}
-        actions={
-          <Button type="button" onClick={() => onSelectKey(STUDIO_NEW_ROW_KEY)} disabled={readOnly}>
-            <Plus className="size-4" aria-hidden="true" />
-            {t('product_configurator.studio.features.add', 'Add feature')}
-          </Button>
-        }
-        onRowClick={(feature) => onSelectKey(feature.key)}
-        rowActions={(feature) => (
-          <RowActions
-            items={[
-              { id: 'edit', label: t('ui.actions.edit', 'Edit'), onSelect: () => onSelectKey(feature.key) },
-              ...(readOnly
-                ? []
-                : [{ id: 'delete', label: t('ui.actions.delete', 'Delete'), destructive: true, onSelect: () => void removeFeature(feature) }]),
-            ]}
-          />
-        )}
-        emptyState={t('product_configurator.studio.features.empty', 'No features yet. Add the first one.')}
-      />
+      <div className="overflow-x-auto">
+        <DataTable<Feature>
+          embedded
+          title={t('product_configurator.studio.features.title', 'Features')}
+          columns={columns}
+          data={features}
+          actions={
+            <Button type="button" onClick={() => onSelectKey(STUDIO_NEW_ROW_KEY)} disabled={readOnly}>
+              <Plus className="size-4" aria-hidden="true" />
+              {t('product_configurator.studio.features.add', 'Add feature')}
+            </Button>
+          }
+          onRowClick={(feature) => onSelectKey(feature.key)}
+          rowActions={(feature) => (
+            <RowActions
+              items={[
+                { id: 'edit', label: t('ui.actions.edit', 'Edit'), onSelect: () => onSelectKey(feature.key) },
+                ...(readOnly
+                  ? []
+                  : [{ id: 'delete', label: t('ui.actions.delete', 'Delete'), destructive: true, onSelect: () => void removeFeature(feature) }]),
+              ]}
+            />
+          )}
+          emptyState={t('product_configurator.studio.features.empty', 'No features yet. Add the first one.')}
+        />
+      </div>
       {editorOpen ? (
         <div ref={editorRef}>
           <FeatureEditor

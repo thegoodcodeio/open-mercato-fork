@@ -8,6 +8,7 @@ import type { ModelListItem } from '../modelsApi'
 
 const apiCallMock = jest.fn()
 const routerPush = jest.fn()
+const useLookupLabelMapMock = jest.fn((_source: unknown, _ids: readonly string[]) => ({ 'product-1': 'Telescopic loader TL-500' }))
 let grantedFeatures: string[] = ['product_configurator.models.view']
 
 type CapturedTableProps = {
@@ -52,7 +53,7 @@ jest.mock('@open-mercato/ui/backend/utils/apiCall', () => ({
 }))
 
 jest.mock('@open-mercato/ui/backend/inputs/LookupPickers', () => ({
-  useLookupLabelMap: () => ({ 'product-1': 'Telescopic loader TL-500' }),
+  useLookupLabelMap: (source: unknown, ids: readonly string[]) => useLookupLabelMapMock(source, ids),
 }))
 
 jest.mock('../lookups', () => ({
@@ -122,11 +123,13 @@ describe('ModelsTable', () => {
   beforeEach(() => {
     apiCallMock.mockReset()
     routerPush.mockReset()
+    useLookupLabelMapMock.mockClear()
     tableProps = null
     grantedFeatures = ['product_configurator.models.view']
   })
 
   it('lists models with product, currency and each publish state, on a stable table id', async () => {
+    grantedFeatures = ['product_configurator.models.view', 'catalog.products.view']
     const published = { id: 'v-4', version: 4, hash: 'h', publishedAt: '2026-11-01T10:00:00.000Z' }
     mockList([
       buildModel(),
@@ -154,17 +157,25 @@ describe('ModelsTable', () => {
     expect(Object.fromEntries(lastRequestedQuery())).toMatchObject({ sortField: 'updatedAt', sortDir: 'desc', pageSize: '25' })
   })
 
-  it('opens the studio on row click and links the open action to it for a manager', async () => {
+  it('does not read catalog products or show the product column without catalog.products.view', async () => {
+    mockList([buildModel()])
+    render(<ModelsTable />)
+    await screen.findByTestId('row-model-1')
+    expect(tableProps?.columns.map((column) => column.id)).not.toContain('product')
+    expect(useLookupLabelMapMock).toHaveBeenCalled()
+    for (const [, ids] of useLookupLabelMapMock.mock.calls) expect(ids).toEqual([])
+  })
+
+  it('links the open action, which the row click follows, to the studio for a manager', async () => {
     grantedFeatures = ['product_configurator.models.view', 'product_configurator.models.manage']
     mockList([buildModel()])
     render(<ModelsTable />)
     await screen.findByTestId('row-model-1')
-    act(() => tableProps?.onRowClick?.(buildModel()))
-    expect(routerPush).toHaveBeenCalledWith('/backend/product_configurator/models/model-1')
+    expect(tableProps?.onRowClick).toBeUndefined()
     expect(screen.getByTestId('action-open').getAttribute('href')).toBe('/backend/product_configurator/models/model-1')
   })
 
-  it('sends a view-only user to the latest published version, and nowhere when none exists', async () => {
+  it('sends a view-only user to the latest published version, and gives unpublished rows no action to click', async () => {
     const published = buildModel({
       id: 'model-2',
       latestVersionId: 'v-4',
@@ -174,10 +185,7 @@ describe('ModelsTable', () => {
     render(<ModelsTable />)
     await screen.findByTestId('row-model-2')
 
-    act(() => tableProps?.onRowClick?.(buildModel()))
-    expect(routerPush).not.toHaveBeenCalled()
-    act(() => tableProps?.onRowClick?.(published))
-    expect(routerPush).toHaveBeenCalledWith('/backend/product_configurator/models/model-2/versions/v-4')
+    expect(tableProps?.rowActions?.(buildModel())).toBeNull()
     const actions = screen.getAllByTestId('action-open')
     expect(actions).toHaveLength(1)
     expect(actions[0].getAttribute('href')).toBe('/backend/product_configurator/models/model-2/versions/v-4')

@@ -312,6 +312,32 @@ describe('validateForPublication', () => {
     })
   })
 
+  describe('action_value', () => {
+    it('reports set and map values the target feature does not allow', async () => {
+      const report = await validate((input) => {
+        input.rules = [
+          setRule('OUT', 1, { featureKey: 'motor', value: 'heavy' }, { featureKey: 'length', value: 25 }),
+          setRule('STEP', 2, { featureKey: 'motor', value: 'heavy' }, { featureKey: 'length', value: 2.3 }),
+          setRule('OK', 3, { featureKey: 'motor', value: 'heavy' }, { featureKey: 'length', value: '2.5' }),
+          {
+            id: 'MAP',
+            effect: 'force',
+            when: [],
+            action: { kind: 'map', featureKey: 'motor', from: { standard: 'heavy', heavy: 'turbo' } },
+            messageTemplate: '',
+            featureKeys: [],
+            order: 4,
+          },
+        ]
+      })
+      expect(report.issues.map((issue) => [issue.check, issue.code, issue.params, issue.refs])).toEqual([
+        ['action_value', 'action_value_invalid', { ruleId: 'OUT', featureKey: 'length', value: 25 }, [{ kind: 'rule', key: 'OUT' }]],
+        ['action_value', 'action_value_invalid', { ruleId: 'STEP', featureKey: 'length', value: 2.3 }, [{ kind: 'rule', key: 'STEP' }]],
+        ['action_value', 'action_value_invalid', { ruleId: 'MAP', featureKey: 'motor', value: 'turbo' }, [{ kind: 'rule', key: 'MAP' }]],
+      ])
+    })
+  })
+
   describe('surcharge_binding', () => {
     it('accepts a surcharge rule bound to one BOM line', async () => {
       const report = await validate((input) => {
@@ -348,13 +374,14 @@ describe('validateForPublication', () => {
     it('reports unknown keys, malformed tokens and line totals outside their surcharge rule', async () => {
       const report = await validate((input) => {
         input.rules = [
-          rule('E', 'error', '{feature.ghost} {formula.nope} {lookup.none} {formula.} {line.base.total}'),
+          rule('E', 'error', '{feature.ghost} {formula.nope} {lookup.none} {formula.} {line.base.total} {feature.motor'),
           rule('S', 'surcharge', '{line.pipe_extra.total} {line.ghost.total}', 2),
         ]
         input.bom[0].ruleId = 'S'
       })
       expect(report.issues.map((issue) => [issue.check, issue.code, issue.params])).toEqual([
         ['placeholder_reference', 'placeholder_malformed', { ruleId: 'E', token: '{formula.}' }],
+        ['placeholder_reference', 'placeholder_malformed', { ruleId: 'E', token: '{feature.motor' }],
         ['placeholder_reference', 'unknown_feature', { ruleId: 'E', token: '{feature.ghost}', featureKey: 'ghost', ownerKey: 'E' }],
         ['placeholder_reference', 'unknown_formula', { ruleId: 'E', token: '{formula.nope}', formulaKey: 'nope', ownerKey: 'E' }],
         ['placeholder_reference', 'unknown_lookup', { ruleId: 'E', token: '{lookup.none}', lookupKey: 'none', ownerKey: 'E' }],

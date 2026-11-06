@@ -6,7 +6,6 @@ import * as React from 'react'
 import { fireEvent, screen, within } from '@testing-library/react'
 import { renderWithProviders } from '@open-mercato/shared/lib/testing/renderWithProviders'
 import { build } from '../../../lib/__tests__/fixtures'
-import type { ValidationIssue } from '../../../lib/validation/types'
 import type { DependencyGraphCanvasProps } from '../tabs/dependencies/DependencyGraphCanvas'
 import type { StudioTabProps } from '../tabs/types'
 
@@ -85,16 +84,13 @@ describe('DependenciesTab', () => {
     expect(within(list).getByRole('heading', { name: 'Lookups' })).toBeTruthy()
   })
 
-  it('marks loops from the last validation report', async () => {
-    const issue: ValidationIssue = {
-      check: 'formula_cycle',
-      code: 'formula_cycle',
-      params: { formulaKeys: ['pipe_meters', 'weight'] },
-      refs: [{ kind: 'formula', key: 'pipe_meters' }, { kind: 'formula', key: 'weight' }],
-    }
-    renderTab({ issues: [{ issue, key: null }] })
+  it('marks formula loops of the current draft without a validation report', async () => {
+    const definition = build((input) => {
+      input.formulas.push({ key: 'loop_a', expr: { kind: 'formula', formulaKey: 'loop_b' } }, { key: 'loop_b', expr: { kind: 'formula', formulaKey: 'loop_a' } })
+    })
+    renderTab({ definition, issues: [] })
     expect(screen.getByTestId('dependency-cycles')).toBeTruthy()
-    expect((await screen.findByTestId('canvas-node-formula:pipe_meters')).getAttribute('data-in-cycle')).toBe('true')
+    expect((await screen.findByTestId('canvas-node-formula:loop_a')).getAttribute('data-in-cycle')).toBe('true')
     expect(screen.getByTestId('canvas-node-feature:length').getAttribute('data-in-cycle')).toBe('false')
     expect(within(screen.getByTestId('dependency-node-list')).getAllByText('In a loop')).toHaveLength(2)
   })

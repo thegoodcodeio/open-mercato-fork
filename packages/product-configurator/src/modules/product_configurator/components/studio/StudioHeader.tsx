@@ -58,7 +58,9 @@ export function StudioHeader({
   return (
     <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between" data-testid="studio-header">
       <div className="min-w-0 space-y-2">
-        <h1 className="truncate text-2xl font-semibold text-foreground">{model.title}</h1>
+        <h1 className="truncate text-2xl font-semibold text-foreground" title={model.title}>
+          {model.title}
+        </h1>
         <div className="flex flex-wrap items-center gap-2">
           {model.latestVersion ? (
             <StatusBadge variant="success" dot>

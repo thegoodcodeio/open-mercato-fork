@@ -105,7 +105,8 @@ export function OverviewTab({ model, definition, readOnly, lockToken, onModelSav
       if (!extractOptimisticLockConflict(error)) throw error
       // Rethrowing the 409 would let CrudForm replace the studio's conflict bar with one that reloads the page and drops the draft.
       onConflict(error)
-      throw createCrudFormError(t('product_configurator.studio.overview.conflict', 'Someone else saved this model. Refresh to load their version.'))
+      const message = t('product_configurator.studio.overview.conflict', 'Someone else saved this model. Refresh to load their version.')
+      throw createCrudFormError(message, { title: message })
     }
   }
 

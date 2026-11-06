@@ -1,6 +1,6 @@
 import type { Condition, Feature, Lookup } from '../../data/validators'
 import type { DefinitionIndex } from '../evaluator/context'
-import { optionDomain, valueIssue } from '../evaluator/structure'
+import { forcedValueIssue, optionDomain, valueIssue } from '../evaluator/structure'
 import { extractPlaceholders } from '../messages'
 import { expressionReads } from './formulas'
 import type { ValidationIssue, ValidationRef } from './types'
@@ -197,6 +197,28 @@ export function checkDefaults(index: DefinitionIndex): ValidationIssue[] {
   return issues
 }
 
+/** Values a `set` or `map` action writes fit the target feature, so the rule can never fail every configuration. */
+export function checkActionValues(index: DefinitionIndex): ValidationIssue[] {
+  const issues: ValidationIssue[] = []
+  for (const rule of index.definition.rules) {
+    const action = rule.action
+    if (!action || action.kind === 'lookup_default') continue
+    const feature = index.features.get(action.featureKey)
+    if (!feature) continue
+    const values = action.kind === 'set' ? [action.value] : [...new Set(Object.values(action.from))]
+    for (const value of values) {
+      if (!forcedValueIssue(index, feature, value)) continue
+      issues.push({
+        check: 'action_value',
+        code: 'action_value_invalid',
+        params: { ruleId: rule.id, featureKey: feature.key, value },
+        refs: [{ kind: 'rule', key: rule.id }],
+      })
+    }
+  }
+  return issues
+}
+
 export function checkSurchargeBindings(index: DefinitionIndex): ValidationIssue[] {
   const rules = new Map(index.definition.rules.map((rule) => [rule.id, rule]))
   const linesByRule = new Map<string, string[]>()
@@ -232,7 +254,7 @@ export function checkSurchargeBindings(index: DefinitionIndex): ValidationIssue[
   return issues
 }
 
-const PLACEHOLDER_SHAPED = /\{(?:feature|formula|lookup|line)\.[^{}]*\}/g
+const PLACEHOLDER_SHAPED = /\{(?:feature|formula|lookup|line)\.[^{}]*(?:\}|$|(?=\{))/g
 
 /**
  * Placeholders name existing keys. `{line.<bomId>.total}` is only filled for a surcharge notice of the

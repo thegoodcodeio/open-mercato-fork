@@ -62,7 +62,7 @@ export function CommitInput<Value>({
   className,
 }: CommitInputProps<Value>) {
   const [text, setText] = React.useState(value)
-  const [invalid, setInvalid] = React.useState(false)
+  const [invalid, setInvalid] = React.useState(() => parse(value) === null)
   const inputId = React.useId()
   const validity = React.useContext(CommitValidityContext)
   const parseRef = React.useRef(parse)
@@ -75,7 +75,7 @@ export function CommitInput<Value>({
     const typed = parseRef.current(textRef.current)
     if (typed !== null && Object.is(typed, parseRef.current(value))) return
     setText(value)
-    setInvalid(false)
+    setInvalid(parseRef.current(value) === null)
   }, [value])
 
   React.useEffect(() => {

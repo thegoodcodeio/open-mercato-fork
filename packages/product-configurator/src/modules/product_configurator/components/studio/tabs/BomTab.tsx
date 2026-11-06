@@ -19,7 +19,7 @@ import { summarizeSkuUnits, useCatalogItems, type CatalogCache, type CatalogEntr
 import { definitionLineSkus, nextBomOrder, suggestBomId } from './bom/bomForm'
 import { BomLineEditor } from './bom/BomLineEditor'
 import { unitList } from './bom/bomUnitMessages'
-import { applyReferenceChanges, useReferenceChangesSince } from './rowEditorSession'
+import { applyReferenceChanges, useReferenceChangesSince, useRevealRowEditor } from './rowEditorSession'
 import { STUDIO_NEW_ROW_KEY, type StudioDefinition, type StudioTabProps } from './types'
 
 type TranslateFn = ReturnType<typeof useT>
@@ -132,9 +132,7 @@ export function BomTab({
   const tableSkus = React.useMemo(() => lines.flatMap((line) => definitionLineSkus(line, definition)), [definition, lines])
   const catalog = useCatalogItems(tableSkus, catalogCache)
 
-  React.useEffect(() => {
-    if (editorOpen) editorRef.current?.scrollIntoView?.({ block: 'nearest' })
-  }, [editorOpen, selectedKey])
+  useRevealRowEditor(editorRef, editorOpen, selectedKey)
 
   const removeLine = React.useCallback(
     async (line: BomLineDefinition) => {
@@ -226,30 +224,32 @@ export function BomTab({
 
   return (
     <div className="space-y-4">
-      <DataTable<BomLineDefinition>
-        embedded
-        title={t('product_configurator.studio.bom.title', 'Bill of materials')}
-        columns={columns}
-        data={lines}
-        actions={
-          <Button type="button" onClick={() => onSelectKey(STUDIO_NEW_ROW_KEY)} disabled={readOnly}>
-            <Plus className="size-4" aria-hidden="true" />
-            {t('product_configurator.studio.bom.add', 'Add line')}
-          </Button>
-        }
-        onRowClick={(line) => onSelectKey(line.id)}
-        rowActions={(line) => (
-          <RowActions
-            items={[
-              { id: 'edit', label: t('ui.actions.edit', 'Edit'), onSelect: () => onSelectKey(line.id) },
-              ...(readOnly
-                ? []
-                : [{ id: 'delete', label: t('ui.actions.delete', 'Delete'), destructive: true, onSelect: () => void removeLine(line) }]),
-            ]}
-          />
-        )}
-        emptyState={t('product_configurator.studio.bom.empty', 'No parts yet. Add the first line.')}
-      />
+      <div className="overflow-x-auto">
+        <DataTable<BomLineDefinition>
+          embedded
+          title={t('product_configurator.studio.bom.title', 'Bill of materials')}
+          columns={columns}
+          data={lines}
+          actions={
+            <Button type="button" onClick={() => onSelectKey(STUDIO_NEW_ROW_KEY)} disabled={readOnly}>
+              <Plus className="size-4" aria-hidden="true" />
+              {t('product_configurator.studio.bom.add', 'Add line')}
+            </Button>
+          }
+          onRowClick={(line) => onSelectKey(line.id)}
+          rowActions={(line) => (
+            <RowActions
+              items={[
+                { id: 'edit', label: t('ui.actions.edit', 'Edit'), onSelect: () => onSelectKey(line.id) },
+                ...(readOnly
+                  ? []
+                  : [{ id: 'delete', label: t('ui.actions.delete', 'Delete'), destructive: true, onSelect: () => void removeLine(line) }]),
+              ]}
+            />
+          )}
+          emptyState={t('product_configurator.studio.bom.empty', 'No parts yet. Add the first line.')}
+        />
+      </div>
       {editorOpen ? (
         <div ref={editorRef}>
           <BomLineEditor

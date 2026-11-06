@@ -17,7 +17,7 @@ import { describeCondition, describeConditions, featureValueOptions } from '../c
 import { featureName, lookupName } from '../names'
 import { problemCountLabel } from '../pluralLabel'
 import { EFFECT_LABELS, RuleEditor } from './RuleEditor'
-import { applyReferenceChanges, useReferenceChangesSince } from './rowEditorSession'
+import { applyReferenceChanges, useReferenceChangesSince, useRevealRowEditor } from './rowEditorSession'
 import { nextRuleOrder, type RuleEffect } from './ruleForm'
 import { STUDIO_NEW_ROW_KEY, type StudioDefinition, type StudioTabProps } from './types'
 
@@ -79,9 +79,7 @@ export function RulesTab({
   const editorRef = React.useRef<HTMLDivElement>(null)
   const changesSinceOpen = useReferenceChangesSince(selectedKey, referenceChanges)
 
-  React.useEffect(() => {
-    if (editorOpen) editorRef.current?.scrollIntoView?.({ block: 'nearest' })
-  }, [editorOpen, selectedKey])
+  useRevealRowEditor(editorRef, editorOpen, selectedKey)
 
   const removeRule = React.useCallback(
     async (rule: Rule) => {
@@ -182,30 +180,32 @@ export function RulesTab({
 
   return (
     <div className="space-y-4">
-      <DataTable<Rule>
-        embedded
-        title={t('product_configurator.studio.rules.title', 'Rules')}
-        columns={columns}
-        data={rules}
-        actions={
-          <Button type="button" onClick={() => onSelectKey(STUDIO_NEW_ROW_KEY)} disabled={readOnly}>
-            <Plus className="size-4" aria-hidden="true" />
-            {t('product_configurator.studio.rules.add', 'Add rule')}
-          </Button>
-        }
-        onRowClick={(rule) => onSelectKey(rule.id)}
-        rowActions={(rule) => (
-          <RowActions
-            items={[
-              { id: 'edit', label: t('ui.actions.edit', 'Edit'), onSelect: () => onSelectKey(rule.id) },
-              ...(readOnly
-                ? []
-                : [{ id: 'delete', label: t('ui.actions.delete', 'Delete'), destructive: true, onSelect: () => void removeRule(rule) }]),
-            ]}
-          />
-        )}
-        emptyState={t('product_configurator.studio.rules.empty', 'No rules yet. Add the first one.')}
-      />
+      <div className="overflow-x-auto">
+        <DataTable<Rule>
+          embedded
+          title={t('product_configurator.studio.rules.title', 'Rules')}
+          columns={columns}
+          data={rules}
+          actions={
+            <Button type="button" onClick={() => onSelectKey(STUDIO_NEW_ROW_KEY)} disabled={readOnly}>
+              <Plus className="size-4" aria-hidden="true" />
+              {t('product_configurator.studio.rules.add', 'Add rule')}
+            </Button>
+          }
+          onRowClick={(rule) => onSelectKey(rule.id)}
+          rowActions={(rule) => (
+            <RowActions
+              items={[
+                { id: 'edit', label: t('ui.actions.edit', 'Edit'), onSelect: () => onSelectKey(rule.id) },
+                ...(readOnly
+                  ? []
+                  : [{ id: 'delete', label: t('ui.actions.delete', 'Delete'), destructive: true, onSelect: () => void removeRule(rule) }]),
+              ]}
+            />
+          )}
+          emptyState={t('product_configurator.studio.rules.empty', 'No rules yet. Add the first one.')}
+        />
+      </div>
       {editorOpen ? (
         <div ref={editorRef}>
           <RuleEditor

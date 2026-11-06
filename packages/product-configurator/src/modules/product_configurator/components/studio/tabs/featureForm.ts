@@ -1,5 +1,6 @@
 import type { Condition, Feature, FeatureType } from '../../../data/validators'
 import { featureSchema } from '../../../data/validators'
+import { numberValueIssue } from '../../../lib/evaluator/structure'
 import { toFiniteNumber } from '../../../lib/values'
 
 export type FeatureFormOption = { label: string; value: string; swatch: string; order: string }
@@ -40,6 +41,8 @@ export const FEATURE_ERROR_KEYS = {
   swatch: `${ERROR_PREFIX}swatch`,
   minAboveMax: `${ERROR_PREFIX}minAboveMax`,
   step: `${ERROR_PREFIX}step`,
+  defaultOutOfRange: `${ERROR_PREFIX}defaultOutOfRange`,
+  defaultOffStep: `${ERROR_PREFIX}defaultOffStep`,
   invalid: `${ERROR_PREFIX}invalid`,
 } as const
 
@@ -206,5 +209,10 @@ export function formToFeature(values: FeatureFormValues, otherKeys: readonly str
     ...(values.visibleWhen.length > 0 || keepsEmptyVisibleWhen ? { visibleWhen: values.visibleWhen } : {}),
   }
   const feature = schemaErrors(candidate, errors)
-  return feature ? { ok: true, feature } : { ok: false, errors }
+  if (!feature) return { ok: false, errors }
+  const defaultIssue = typeof feature.default === 'number' ? numberValueIssue(feature, feature.default) : null
+  if (defaultIssue) {
+    return { ok: false, errors: { default: defaultIssue === 'step' ? FEATURE_ERROR_KEYS.defaultOffStep : FEATURE_ERROR_KEYS.defaultOutOfRange } }
+  }
+  return { ok: true, feature }
 }

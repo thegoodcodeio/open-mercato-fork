@@ -3,6 +3,16 @@
 import * as React from 'react'
 import type { DefinitionUpdater, StudioDefinition } from './types'
 
+/** Scrolls an opened row editor into view and moves focus to its first field, so keyboard users land in it. */
+export function useRevealRowEditor(editorRef: React.RefObject<HTMLElement | null>, editorOpen: boolean, selectedKey: string | null): void {
+  React.useEffect(() => {
+    if (!editorOpen) return
+    const editor = editorRef.current
+    editor?.scrollIntoView?.({ block: 'nearest' })
+    editor?.querySelector<HTMLElement>('input:not([disabled]), textarea:not([disabled])')?.focus({ preventScroll: true })
+  }, [editorOpen, editorRef, selectedKey])
+}
+
 /**
  * Reports a row editor's unsaved edits to the studio guard: values that differ from the ones the editor
  * opened with, or nested text that does not parse yet. Reports `false` when the editor closes.

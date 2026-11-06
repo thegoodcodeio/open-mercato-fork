@@ -25,7 +25,7 @@ const priceKindsQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(READ_PAGE_SIZE).default(50),
 })
 
-type PriceKindRow = { id: string; code: string; title: string; is_active: boolean | null }
+type PriceKindRow = { id: string; code: string; title: string; currency_code: string | null; is_active: boolean | null }
 
 /**
  * Reads every matching kind of the tenant and the organization: price kinds are a short settings list, and the
@@ -38,7 +38,7 @@ async function readPriceKinds(queryEngine: QueryEngine, scope: ModelScope, filte
       tenantId: scope.tenantId,
       organizationIds: [scope.organizationId, ''],
       filters,
-      fields: ['id', 'code', 'title', 'is_active'],
+      fields: ['id', 'code', 'title', 'currency_code', 'is_active'],
       sort: [{ field: 'title', dir: SortDir.Asc }],
       page: { page, pageSize: READ_PAGE_SIZE },
     })
@@ -66,7 +66,13 @@ export async function GET(req: Request): Promise<Response> {
     const matching = term ? rows.filter((row) => matchesSearch(row, term)) : rows
     const limit = query.ids.length ? query.ids.length : query.pageSize
     return NextResponse.json({
-      items: matching.slice(0, limit).map((row) => ({ id: row.id, code: row.code, title: row.title, isActive: row.is_active !== false })),
+      items: matching.slice(0, limit).map((row) => ({
+        id: row.id,
+        code: row.code,
+        title: row.title,
+        currencyCode: row.currency_code ?? null,
+        isActive: row.is_active !== false,
+      })),
     })
   } catch (error) {
     return routeErrorResponse(error, 'price_kinds_read')
@@ -74,7 +80,9 @@ export async function GET(req: Request): Promise<Response> {
 }
 
 const priceKindsResponseSchema = z.object({
-  items: z.array(z.object({ id: z.string().uuid(), code: z.string(), title: z.string(), isActive: z.boolean() })),
+  items: z.array(
+    z.object({ id: z.string().uuid(), code: z.string(), title: z.string(), currencyCode: z.string().nullable(), isActive: z.boolean() }),
+  ),
 })
 
 export const openApi: OpenApiRouteDoc = {

@@ -7,7 +7,7 @@ import { fireEvent, screen, within } from '@testing-library/react'
 import { renderWithProviders } from '@open-mercato/shared/lib/testing/renderWithProviders'
 import type { Feature } from '../../../data/validators'
 import { build } from '../../../lib/__tests__/fixtures'
-import type { DefinitionUpdater, StudioDefinition, StudioTabProps } from '../tabs/types'
+import { STUDIO_NEW_ROW_KEY, type DefinitionUpdater, type StudioDefinition, type StudioTabProps } from '../tabs/types'
 
 // jsdom has no TextEncoder; the definition schema measures the draft size with it.
 Object.assign(globalThis, { TextEncoder })
@@ -207,5 +207,23 @@ describe('FeaturesTab', () => {
     expect(screen.getAllByText('Unit: kW').length).toBe(1)
     expect(screen.queryAllByTestId('row-action-delete')).toHaveLength(0)
     expect(screen.getAllByTestId('row-action-edit').length).toBeGreaterThan(0)
+  })
+
+  it('moves focus to the Name field when a new feature editor opens', () => {
+    renderTab({ selectedKey: STUDIO_NEW_ROW_KEY })
+    const editor = screen.getByTestId('feature-editor')
+    expect(document.activeElement).toBe(within(editor).getAllByRole('textbox')[0])
+    expect(within(editor).getByLabelText('Name')).toBe(document.activeElement)
+  })
+
+  it('offers a unit for number features only and keeps the unit a choice feature already has', () => {
+    const definition = build((input) => {
+      input.features[0] = { ...input.features[0], unit: 'kW' }
+    })
+    const { current } = renderTab({ definition, selectedKey: 'motor' })
+    const editor = screen.getByTestId('feature-editor')
+    expect(within(editor).queryByLabelText('Unit')).toBeNull()
+    fireEvent.click(within(editor).getByRole('button', { name: 'Save feature' }))
+    expect(savedFeature(current, 'motor')?.unit).toBe('kW')
   })
 })

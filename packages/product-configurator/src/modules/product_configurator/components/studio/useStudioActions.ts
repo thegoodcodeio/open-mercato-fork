@@ -3,11 +3,15 @@
 import * as React from 'react'
 import type { TranslateFn } from '@open-mercato/shared/lib/i18n/context'
 import { flash } from '@open-mercato/ui/backend/FlashMessages'
-import { dismissRecordConflict, surfaceRecordConflict } from '@open-mercato/ui/backend/conflicts'
+import { dismissRecordConflict } from '@open-mercato/ui/backend/conflicts'
 import type { ConfirmDialogOptions } from '@open-mercato/ui/backend/confirm-dialog'
 import { useGuardedMutation } from '@open-mercato/ui/backend/injection/useGuardedMutation'
 import { apiCallOrThrow, withScopedApiRequestHeaders } from '@open-mercato/ui/backend/utils/apiCall'
-import { buildOptimisticLockHeader } from '@open-mercato/ui/backend/utils/optimisticLock'
+import {
+  buildOptimisticLockHeader,
+  extractOptimisticLockConflict,
+  extractRecordLockConflict,
+} from '@open-mercato/ui/backend/utils/optimisticLock'
 import {
   MODEL_RESOURCE_KIND,
   MODELS_API,
@@ -99,14 +103,21 @@ export function useStudioActions({ state, dispatch, reload, confirm, t, pendingJ
     void refresh()
   }, [refresh])
 
-  /** `useGuardedMutation` already shows the conflict bar; showing it again replaces it with one whose Refresh asks first. */
+  /**
+   * The studio bar (with "Copy my draft") is the only conflict surface, so the platform bar `useGuardedMutation`
+   * shows is dismissed. A save on a deleted model also answers 409, so the model is looked up before blaming another save.
+   */
   const handleConflict = React.useCallback(
     (error: unknown): boolean => {
-      if (!surfaceRecordConflict(error, t, { onRefresh: requestRefresh })) return false
+      if (!extractOptimisticLockConflict(error) && !extractRecordLockConflict(error)) return false
+      dismissRecordConflict()
       dispatch({ type: 'conflict' })
+      void reload().then((result) => {
+        if (result.status === 'notFound') setModelMissing(true)
+      })
       return true
     },
-    [dispatch, requestRefresh, t],
+    [dispatch, reload],
   )
 
   const runSave = React.useCallback(

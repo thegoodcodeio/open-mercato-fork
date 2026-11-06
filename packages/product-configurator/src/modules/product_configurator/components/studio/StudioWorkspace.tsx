@@ -194,9 +194,15 @@ export function StudioWorkspace({ initialDetail, reload }: StudioWorkspaceProps)
         value={state.activeTab}
         onValueChange={(value) => (isStudioTabId(value) ? dispatch({ type: 'selectTab', tab: value }) : undefined)}
       >
-        <TabsList aria-label={t('product_configurator.studio.tabs.label', 'Model sections')}>
+        <TabsList className="w-full overflow-x-auto overflow-y-hidden" aria-label={t('product_configurator.studio.tabs.label', 'Model sections')}>
           {STUDIO_TABS.map((tab) => (
-            <TabsTrigger key={tab.id} value={tab.id} disabled={state.draft === null && tab.id !== 'advanced'} count={issuesByTab[tab.id]?.length || undefined}>
+            <TabsTrigger
+              key={tab.id}
+              value={tab.id}
+              className="shrink-0"
+              disabled={state.draft === null && tab.id !== 'advanced'}
+              count={issuesByTab[tab.id]?.length || undefined}
+            >
               {t(tab.labelKey, tab.fallbackLabel)}
             </TabsTrigger>
           ))}

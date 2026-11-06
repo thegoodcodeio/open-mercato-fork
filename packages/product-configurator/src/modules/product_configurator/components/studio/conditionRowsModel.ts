@@ -92,7 +92,7 @@ export function defaultCondition(group: ConditionGroup, definition: StudioDefini
     case 'feature':
       return feature ? { kind: 'compare', featureKey: feature.key, op: 'eq', value: initialCompareValue(definition, feature) } : null
     case 'text':
-      return feature ? { kind: 'includes', featureKey: feature.key, value: 'value' } : null
+      return feature ? { kind: 'includes', featureKey: feature.key, value: '' } : null
     case 'calculated': {
       const formula = definition.formulas[0]
       return formula ? { kind: 'calculated', formulaKey: formula.key, op: 'gt', value: 0 } : null

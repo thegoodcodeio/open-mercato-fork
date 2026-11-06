@@ -1,13 +1,14 @@
 const readApiResultOrThrowMock = jest.fn()
+const apiCallMock = jest.fn()
 
 jest.mock('@open-mercato/ui/backend/utils/apiCall', () => ({
-  apiCall: jest.fn(),
+  apiCall: (...args: unknown[]) => apiCallMock(...args),
   readApiResultOrThrow: (...args: unknown[]) => readApiResultOrThrowMock(...args),
 }))
 
 jest.mock('@open-mercato/core/modules/catalog/components/lookupSources', () => ({ productLookupSource: {} }))
 
-import { activePriceKindLookupSource } from '../lookups'
+import { activePriceKindLookupSource, loadPriceKindCurrency } from '../lookups'
 
 describe('activePriceKindLookupSource', () => {
   beforeEach(() => readApiResultOrThrowMock.mockReset())
@@ -20,5 +21,25 @@ describe('activePriceKindLookupSource', () => {
     const url = new URL(String(readApiResultOrThrowMock.mock.calls[0][0]), 'http://localhost')
     expect(url.pathname).toBe('/api/product_configurator/price-kinds')
     expect(Object.fromEntries(url.searchParams)).toEqual({ isActive: 'true', search: 'sale', pageSize: '50' })
+  })
+
+  it('shows the currency of a price kind next to its code', async () => {
+    readApiResultOrThrowMock.mockResolvedValue({ items: [{ id: 'pk-2', code: 'usd_list', title: 'USD list', currencyCode: 'USD' }] })
+    await expect(activePriceKindLookupSource.search('usd')).resolves.toEqual([{ value: 'pk-2', label: 'USD list (usd_list, USD)' }])
+  })
+})
+
+describe('loadPriceKindCurrency', () => {
+  beforeEach(() => apiCallMock.mockReset())
+
+  it('reads the currency of one price kind and treats a missing one as none', async () => {
+    apiCallMock.mockResolvedValue({ ok: true, result: { items: [{ id: 'pk-2', currencyCode: 'USD' }] } })
+    await expect(loadPriceKindCurrency('pk-2')).resolves.toBe('USD')
+    expect(apiCallMock).toHaveBeenCalledWith('/api/product_configurator/price-kinds?ids=pk-2')
+
+    apiCallMock.mockResolvedValue({ ok: true, result: { items: [{ id: 'pk-3', currencyCode: null }] } })
+    await expect(loadPriceKindCurrency('pk-3')).resolves.toBeNull()
+    apiCallMock.mockResolvedValue({ ok: false, result: null })
+    await expect(loadPriceKindCurrency('pk-4')).resolves.toBeNull()
   })
 })

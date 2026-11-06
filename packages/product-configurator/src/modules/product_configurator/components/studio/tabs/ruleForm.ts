@@ -1,5 +1,8 @@
 import type { Condition, Feature, Lookup, Rule, RuleAction, SelectionValue } from '../../../data/validators'
 import { ruleSchema } from '../../../data/validators'
+import { indexDefinition } from '../../../lib/evaluator/context'
+import type { SelectionIssueReason } from '../../../lib/evaluator/errors'
+import { forcedValueIssue } from '../../../lib/evaluator/structure'
 import { sortByOrder, toFiniteNumber } from '../../../lib/values'
 import { conditionFeatureKeys } from '../conditionRowsModel'
 import type { StudioDefinition } from './types'
@@ -53,6 +56,9 @@ export const RULE_ERROR_KEYS = {
   mapRowsRequired: `${ERROR_PREFIX}mapRowsRequired`,
   duplicateMapRow: `${ERROR_PREFIX}duplicateMapRow`,
   lookupMissing: `${ERROR_PREFIX}lookupMissing`,
+  valueOutOfRange: `${ERROR_PREFIX}valueOutOfRange`,
+  valueOffStep: `${ERROR_PREFIX}valueOffStep`,
+  valueNotAnOption: `${ERROR_PREFIX}valueNotAnOption`,
   invalid: `${ERROR_PREFIX}invalid`,
 } as const
 
@@ -65,7 +71,19 @@ export const RULE_ERROR_FALLBACKS: Record<string, string> = {
   [RULE_ERROR_KEYS.mapRowsRequired]: 'Add at least one row.',
   [RULE_ERROR_KEYS.duplicateMapRow]: 'This value is already mapped.',
   [RULE_ERROR_KEYS.lookupMissing]: 'Pick a permitted lookup from this model.',
+  [RULE_ERROR_KEYS.valueOutOfRange]: 'The value is outside the range of the field.',
+  [RULE_ERROR_KEYS.valueOffStep]: 'The value does not match the step of the field.',
+  [RULE_ERROR_KEYS.valueNotAnOption]: 'The value is not one of the options of the field.',
   [RULE_ERROR_KEYS.invalid]: 'This value is not valid.',
+}
+
+const VALUE_ISSUE_ERRORS: Record<SelectionIssueReason, string> = {
+  below_min: RULE_ERROR_KEYS.valueOutOfRange,
+  above_max: RULE_ERROR_KEYS.valueOutOfRange,
+  step: RULE_ERROR_KEYS.valueOffStep,
+  not_an_option: RULE_ERROR_KEYS.valueNotAnOption,
+  type: RULE_ERROR_KEYS.invalid,
+  unknown_feature: RULE_ERROR_KEYS.invalid,
 }
 
 const ID_PATTERN = /^[A-Za-z0-9_-]+$/
@@ -183,9 +201,13 @@ export function nextMapRow(rows: readonly MapRow[], values: readonly string[]): 
 function buildAction(action: RuleActionForm, definition: StudioDefinition, errors: RuleFormErrors): RuleAction | undefined {
   if (!action.featureKey) errors['action.featureKey'] = RULE_ERROR_KEYS.required
   switch (action.kind) {
-    case 'set':
+    case 'set': {
+      const feature = definition.features.find((entry) => entry.key === action.featureKey)
+      const reason = feature && action.setValue !== '' ? forcedValueIssue(indexDefinition(definition), feature, action.setValue) : null
       if (action.setValue === '') errors['action.setValue'] = RULE_ERROR_KEYS.required
+      else if (reason) errors['action.setValue'] = VALUE_ISSUE_ERRORS[reason]
       return { kind: 'set', featureKey: action.featureKey, value: action.setValue }
+    }
     case 'map': {
       if (action.mapRows.length === 0) errors['action.mapRows'] = RULE_ERROR_KEYS.mapRowsRequired
       const seen = new Set<string>()

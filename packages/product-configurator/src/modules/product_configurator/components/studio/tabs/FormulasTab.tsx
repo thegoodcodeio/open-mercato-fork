@@ -15,7 +15,7 @@ import { renameReference } from '../../../lib/renameReference'
 import { problemCountLabel } from '../pluralLabel'
 import { FormulaEditor } from './formulas/FormulaEditor'
 import { formatPreview, previewFormulas } from './formulas/formulaForm'
-import { applyReferenceChanges, useReferenceChangesSince } from './rowEditorSession'
+import { applyReferenceChanges, useReferenceChangesSince, useRevealRowEditor } from './rowEditorSession'
 import { STUDIO_NEW_ROW_KEY, type StudioDefinition, type StudioTabProps } from './types'
 
 export function FormulasTab({
@@ -38,9 +38,7 @@ export function FormulasTab({
   const changesSinceOpen = useReferenceChangesSince(selectedKey, referenceChanges)
   const previews = React.useMemo(() => previewFormulas(definition), [definition])
 
-  React.useEffect(() => {
-    if (editorOpen) editorRef.current?.scrollIntoView?.({ block: 'nearest' })
-  }, [editorOpen, selectedKey])
+  useRevealRowEditor(editorRef, editorOpen, selectedKey)
 
   const removeFormula = React.useCallback(
     async (formula: Formula) => {
@@ -127,30 +125,32 @@ export function FormulasTab({
 
   return (
     <div className="space-y-4">
-      <DataTable<Formula>
-        embedded
-        title={t('product_configurator.studio.formulas.title', 'Formulas')}
-        columns={columns}
-        data={formulas}
-        actions={
-          <Button type="button" onClick={() => onSelectKey(STUDIO_NEW_ROW_KEY)} disabled={readOnly}>
-            <Plus className="size-4" aria-hidden="true" />
-            {t('product_configurator.studio.formulas.add', 'Add formula')}
-          </Button>
-        }
-        onRowClick={(formula) => onSelectKey(formula.key)}
-        rowActions={(formula) => (
-          <RowActions
-            items={[
-              { id: 'edit', label: t('ui.actions.edit', 'Edit'), onSelect: () => onSelectKey(formula.key) },
-              ...(readOnly
-                ? []
-                : [{ id: 'delete', label: t('ui.actions.delete', 'Delete'), destructive: true, onSelect: () => void removeFormula(formula) }]),
-            ]}
-          />
-        )}
-        emptyState={t('product_configurator.studio.formulas.empty', 'No formulas yet. Add the first one.')}
-      />
+      <div className="overflow-x-auto">
+        <DataTable<Formula>
+          embedded
+          title={t('product_configurator.studio.formulas.title', 'Formulas')}
+          columns={columns}
+          data={formulas}
+          actions={
+            <Button type="button" onClick={() => onSelectKey(STUDIO_NEW_ROW_KEY)} disabled={readOnly}>
+              <Plus className="size-4" aria-hidden="true" />
+              {t('product_configurator.studio.formulas.add', 'Add formula')}
+            </Button>
+          }
+          onRowClick={(formula) => onSelectKey(formula.key)}
+          rowActions={(formula) => (
+            <RowActions
+              items={[
+                { id: 'edit', label: t('ui.actions.edit', 'Edit'), onSelect: () => onSelectKey(formula.key) },
+                ...(readOnly
+                  ? []
+                  : [{ id: 'delete', label: t('ui.actions.delete', 'Delete'), destructive: true, onSelect: () => void removeFormula(formula) }]),
+              ]}
+            />
+          )}
+          emptyState={t('product_configurator.studio.formulas.empty', 'No formulas yet. Add the first one.')}
+        />
+      </div>
       <p className="text-xs text-muted-foreground">
         {t('product_configurator.studio.formulas.previewHint', 'Previews use the model defaults. "—" means the value cannot be computed with them.')}
       </p>

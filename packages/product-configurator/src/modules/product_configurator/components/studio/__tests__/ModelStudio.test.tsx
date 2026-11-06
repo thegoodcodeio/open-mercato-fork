@@ -3,7 +3,7 @@
  */
 import { TextEncoder } from 'node:util'
 import * as React from 'react'
-import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders } from '@open-mercato/shared/lib/testing/renderWithProviders'
 import { dismissRecordConflict, getRecordConflictForTest } from '@open-mercato/ui/backend/conflicts'
 import { OPTIMISTIC_LOCK_HEADER_NAME } from '@open-mercato/shared/lib/crud/optimistic-lock-headers'
@@ -198,7 +198,7 @@ describe('ModelStudio', () => {
     expect(screen.getByRole('tab', { name: /Features/ }).getAttribute('aria-selected')).toBe('true')
   })
 
-  it('on a 409 shows the conflict bar whose refresh asks before replacing unsaved edits', async () => {
+  it('on a 409 shows only the studio conflict bar, whose refresh asks before replacing unsaved edits', async () => {
     apiCallOrThrowMock.mockRejectedValue(
       httpError(409, {
         code: 'optimistic_lock_conflict',
@@ -212,15 +212,15 @@ describe('ModelStudio', () => {
     fireEvent.click(button('Save draft'))
 
     expect(await screen.findByTestId('studio-conflict-alert')).toBeTruthy()
-    const conflict = getRecordConflictForTest()
-    expect(conflict?.onRefresh).toBeInstanceOf(Function)
+    expect(getRecordConflictForTest()).toBeNull()
+    expect(flashMock).not.toHaveBeenCalledWith(expect.anything(), 'error')
 
     apiCallMock.mockImplementation(async (url: string) =>
       url.startsWith('/api/product_configurator/models')
         ? { ok: true, status: 200, result: modelPayload('2026-11-05T10:30:00.000Z') }
         : { ok: false, status: 403, result: null },
     )
-    act(() => conflict?.onRefresh?.())
+    fireEvent.click(button('Refresh…'))
     expect(await screen.findByText('Refresh and lose your changes?')).toBeTruthy()
     expect(button('Copy my draft (JSON)')).toBeTruthy()
 
@@ -230,7 +230,7 @@ describe('ModelStudio', () => {
     expect(screen.queryByRole('button', { name: 'Discard unsaved changes' })).toBeNull()
   })
 
-  it('shows a deleted-model state with a draft copy when the refresh finds no model', async () => {
+  it('shows a deleted-model state with a draft copy right after a save on a deleted model', async () => {
     apiCallOrThrowMock.mockRejectedValue(
       httpError(409, {
         code: 'optimistic_lock_conflict',
@@ -241,12 +241,8 @@ describe('ModelStudio', () => {
     )
     await renderStudio()
     await editDraftThroughJson()
-    fireEvent.click(button('Save draft'))
-    expect(await screen.findByTestId('studio-conflict-alert')).toBeTruthy()
-
     apiCallMock.mockImplementation(async () => ({ ok: false, status: 404, result: null }))
-    fireEvent.click(button('Refresh…'))
-    fireEvent.click(await screen.findByRole('button', { name: 'Refresh' }))
+    fireEvent.click(button('Save draft'))
 
     const missing = await screen.findByTestId('studio-missing-alert')
     expect(missing.textContent).toContain('Configuration model not found')

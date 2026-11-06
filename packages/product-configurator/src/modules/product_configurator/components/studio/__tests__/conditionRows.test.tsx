@@ -7,6 +7,7 @@ import { fireEvent, screen, within } from '@testing-library/react'
 import { renderWithProviders } from '@open-mercato/shared/lib/testing/renderWithProviders'
 import type { Condition } from '../../../data/validators'
 import { build } from '../../../lib/__tests__/fixtures'
+import { CommitValidityScope, useCommitValidity } from '../CommitInput'
 import { ConditionRows } from '../ConditionRows'
 import { describeCondition } from '../conditionRowsModel'
 import { RuleActionEditor } from '../tabs/RuleActionEditor'
@@ -64,6 +65,30 @@ describe('ConditionRows', () => {
     expect(screen.queryByRole('group', { name: 'Condition 2' })).toBeNull()
     expect(valueInput(1).value).toBe('3x')
     expect(screen.getByRole('alert').textContent).toBe('Enter a number.')
+  })
+
+  it('adds a "Text contains" row with an empty value that blocks saving until a word is typed', () => {
+    const onChange = jest.fn()
+    function ScopedRows() {
+      const { hasInvalid, validity } = useCommitValidity()
+      return (
+        <CommitValidityScope value={validity}>
+          <ControlledRows initial={[]} onChange={onChange} />
+          <span data-testid="has-invalid">{String(hasInvalid)}</span>
+        </CommitValidityScope>
+      )
+    }
+    renderWithProviders(<ScopedRows />)
+    fireEvent.click(screen.getByRole('button', { name: 'Text contains' }))
+    expect(onChange).toHaveBeenLastCalledWith([{ kind: 'includes', featureKey: 'motor', value: '' }])
+    const row = screen.getByRole('group', { name: 'Condition 1' })
+    const text = within(row).getByRole('textbox', { name: 'Text' })
+    expect((text as HTMLInputElement).value).toBe('')
+    expect(within(row).getByRole('alert').textContent).toBe('Enter one word without spaces.')
+    expect(screen.getByTestId('has-invalid').textContent).toBe('true')
+    fireEvent.change(text, { target: { value: 'hd' } })
+    expect(onChange).toHaveBeenLastCalledWith([{ kind: 'includes', featureKey: 'motor', value: 'hd' }])
+    expect(screen.getByTestId('has-invalid').textContent).toBe('false')
   })
 })
 

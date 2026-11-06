@@ -123,15 +123,21 @@ function coerceValue(feature: Feature, value: SelectionValue): SelectionValue | 
 
 export function valueIssue(index: DefinitionIndex, feature: Feature, value: SelectionValue): SelectionIssueReason | null {
   if (feature.type === 'boolean') return typeof value === 'boolean' ? null : 'type'
-  if (feature.type === 'number') {
-    if (typeof value !== 'number') return 'type'
-    if (feature.min !== undefined && value < feature.min) return 'below_min'
-    if (feature.max !== undefined && value > feature.max) return 'above_max'
-    if (feature.step !== undefined && !isOnStep(value, feature.min ?? 0, feature.step)) return 'step'
-    return null
-  }
+  if (feature.type === 'number') return typeof value === 'number' ? numberValueIssue(feature, value) : 'type'
   if (typeof value !== 'string') return 'type'
   return optionDomain(index, feature).includes(value) ? null : 'not_an_option'
+}
+
+export function numberValueIssue(feature: Pick<Feature, 'min' | 'max' | 'step'>, value: number): SelectionIssueReason | null {
+  if (feature.min !== undefined && value < feature.min) return 'below_min'
+  if (feature.max !== undefined && value > feature.max) return 'above_max'
+  if (feature.step !== undefined && !isOnStep(value, feature.min ?? 0, feature.step)) return 'step'
+  return null
+}
+
+/** The reason `settle` would refuse a value a force rule writes, after the same coercion it applies. */
+export function forcedValueIssue(index: DefinitionIndex, feature: Feature, value: SelectionValue): SelectionIssueReason | null {
+  return valueIssue(index, feature, coerceValue(feature, value) ?? value)
 }
 
 function isOnStep(value: number, base: number, step: number): boolean {

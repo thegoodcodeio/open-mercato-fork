@@ -10,18 +10,28 @@ import { apiCall } from '@open-mercato/ui/backend/utils/apiCall'
 export { productLookupSource } from '@open-mercato/core/modules/catalog/components/lookupSources'
 
 const CURRENCY_OPTIONS_URL = '/api/currencies/currencies/options'
+const PRICE_KINDS_URL = '/api/product_configurator/price-kinds'
 
 // Publication rejects an inactive price kind, so the create dialog offers active ones only.
 export const activePriceKindLookupSource: LookupSource = createIdsLookupSource(
   'product-configurator-price-kinds',
-  '/api/product_configurator/price-kinds',
+  PRICE_KINDS_URL,
   (item) => {
     const value = pickLookupString(item, 'id')
     if (!value) return null
-    return { value, label: lookupLabelWithCode(pickLookupString(item, 'title') || value, pickLookupString(item, 'code')) }
+    const code = pickLookupString(item, 'code')
+    const currencyCode = pickLookupString(item, 'currencyCode')
+    return { value, label: lookupLabelWithCode(pickLookupString(item, 'title') || value, currencyCode ? `${code}, ${currencyCode}` : code) }
   },
   { isActive: 'true' },
 )
+
+/** The currency a price kind is bound to, or `null` when it has none or cannot be read. */
+export async function loadPriceKindCurrency(priceKindId: string): Promise<string | null> {
+  const call = await apiCall<{ items?: LookupRemoteItem[] }>(`${PRICE_KINDS_URL}?ids=${encodeURIComponent(priceKindId)}`)
+  const item = call.ok && Array.isArray(call.result?.items) ? call.result.items[0] : undefined
+  return item ? pickLookupString(item, 'currencyCode') || null : null
+}
 
 export type CurrencyOption = { value: string; label: string }
 

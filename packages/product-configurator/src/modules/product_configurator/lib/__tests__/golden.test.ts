@@ -45,7 +45,7 @@ describe('golden values on the reference telehandler', () => {
     const report = await validateForPublication({
       definition: buildReferenceDefinition({ currencyCode: 'USD', priceKindId: PRICE_KIND_ID }),
       productId: PRODUCT_ID,
-      catalog: fakeCatalog({ items }).port,
+      catalog: fakeCatalog({ items, priceKindCurrency: 'USD' }).port,
     })
     expect(report).toEqual({ ok: true, issues: [] })
   })

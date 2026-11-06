@@ -1,7 +1,13 @@
+import { randomUUID } from 'node:crypto'
 import { expect, test } from '@playwright/test'
 import { apiRequest, getAuthToken } from '@open-mercato/core/helpers/integration/api'
 import { deleteCatalogProductIfExists } from '@open-mercato/core/helpers/integration/catalogFixtures'
-import { readJsonSafe } from '@open-mercato/core/helpers/integration/generalFixtures'
+import {
+  apiRequestWithSelectedOrg,
+  createOrganizationFixture,
+  deleteOrganizationIfExists,
+} from '@open-mercato/core/helpers/integration/authFixtures'
+import { getTokenContext, readJsonSafe } from '@open-mercato/core/helpers/integration/generalFixtures'
 import {
   LOCK_HEADER,
   MODELS_PATH,
@@ -83,6 +89,71 @@ test.describe('TC-PCFG-001: configuration model create, update, delete', () => {
       await deleteModelIfExists(request, token, modelId)
       await deletePriceKindIfExists(request, token, priceKindId)
       await deleteCatalogProductIfExists(request, token, productId)
+    }
+  })
+  test('list search matches title or key as plain text in the database query: paged, scoped, % and _ literal', async ({ request }) => {
+    const token = await getAuthToken(request, 'superadmin')
+    const { organizationId: homeOrganizationId, tenantId } = getTokenContext(token)
+    const suffix = uniqueSuffix()
+    const home = { token, selectedOrgId: homeOrganizationId }
+    let otherOrganizationId: string | null = null
+    let otherOrganizationModelId: string | null = null
+    const modelIds: string[] = []
+
+    const create = async (modelKey: string, title: string, selectedOrgId: string): Promise<string> =>
+      createModelFixture(request, token, { productId: randomUUID(), priceKindId: randomUUID(), modelKey, title, selectedOrgId })
+    const list = async (search: string, page = 1, pageSize = 100) => {
+      const query = `page=${page}&pageSize=${pageSize}&sortField=modelKey&sortDir=asc&search=${encodeURIComponent(search)}`
+      const response = await apiRequestWithSelectedOrg(request, 'GET', `${MODELS_PATH}?${query}`, home)
+      expect(response.status()).toBe(200)
+      const body = await readJsonSafe<{ items: Array<{ modelKey: string }>; total: number; totalPages: number }>(response)
+      return { keys: (body?.items ?? []).map((item) => item.modelKey), total: body?.total, totalPages: body?.totalPages }
+    }
+
+    try {
+      otherOrganizationId = await createOrganizationFixture(request, token, { name: `QA PCFG 001 ${suffix}`, tenantId })
+      const fillerKeys = ['01', '02', '03', '07'].map((index) => `qa-pcfg-001-filler-${index}-${suffix}`)
+      for (const [position, modelKey] of fillerKeys.entries()) {
+        modelIds.push(await create(modelKey, `QA PCFG 001 Filler ${['01', '02', '03', '07'][position]} ${suffix}`, homeOrganizationId))
+      }
+      const percentKey = `qa_pcfg_001_under_${suffix}`
+      modelIds.push(await create(percentKey, `QA PCFG 001 50% off ${suffix}`, homeOrganizationId))
+      const deletedId = await create(`qa-pcfg-001-filler-09-${suffix}`, `QA PCFG 001 Filler 09 ${suffix}`, homeOrganizationId)
+      modelIds.push(deletedId)
+      const deleted = await readModel(request, token, deletedId)
+      const deleteResponse = await apiRequest(request, 'DELETE', `${MODELS_PATH}?id=${deletedId}`, {
+        token,
+        headers: { [LOCK_HEADER]: deleted.updatedAt, Cookie: `om_selected_org=${homeOrganizationId}` },
+      })
+      expect(deleteResponse.status()).toBe(200)
+      otherOrganizationModelId = await create(`qa-pcfg-001-filler-08-${suffix}`, `QA PCFG 001 Filler 08 ${suffix}`, otherOrganizationId)
+
+      const pages = [await list(`-${suffix}`, 1, 3), await list(`-${suffix}`, 2, 3)]
+      expect(pages.map((page) => [page.total, page.totalPages, page.keys.length])).toEqual([
+        [4, 2, 3],
+        [4, 2, 1],
+      ])
+      expect(pages.flatMap((page) => page.keys), 'no deleted match and no match of another organization').toEqual(fillerKeys)
+
+      expect((await list(fillerKeys[0])).keys).toEqual([fillerKeys[0]])
+      expect((await list(`Filler 07 ${suffix}`)).keys).toEqual([fillerKeys[3]])
+      expect((await list(`Filler 08 ${suffix}`)).total, 'a match in another organization is not listed').toBe(0)
+      expect((await list(`Filler 09 ${suffix}`)).total, 'a deleted match is not listed').toBe(0)
+      expect((await list(`50% off ${suffix}`)).keys).toEqual([percentKey])
+      expect((await list(`001_under_${suffix}`)).keys).toEqual([percentKey])
+      expect((await list(`001%under_${suffix}`)).keys).toEqual([])
+      expect((await list(`Filler 0_ ${suffix}`)).keys).toEqual([])
+
+      const ownerList = await apiRequestWithSelectedOrg(request, 'GET', `${MODELS_PATH}?search=${encodeURIComponent(`Filler 08 ${suffix}`)}`, {
+        token,
+        selectedOrgId: otherOrganizationId,
+      })
+      const ownerBody = await readJsonSafe<{ items: Array<{ id: string }> }>(ownerList)
+      expect(ownerBody?.items.map((item) => item.id), 'the owning organization finds its model').toEqual([otherOrganizationModelId])
+    } finally {
+      for (const id of modelIds) await deleteModelIfExists(request, token, id, homeOrganizationId)
+      await deleteModelIfExists(request, token, otherOrganizationModelId, otherOrganizationId ?? undefined)
+      await deleteOrganizationIfExists(request, token, otherOrganizationId)
     }
   })
 })

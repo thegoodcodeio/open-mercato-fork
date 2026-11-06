@@ -1,6 +1,6 @@
 import type { Condition } from '../../../../data/validators'
 import { extractPlaceholders } from '../../../../lib/messages'
-import { expressionReads } from '../../../../lib/validation/formulas'
+import { checkFormulaCycles, expressionReads } from '../../../../lib/validation/formulas'
 import type { ValidationIssue } from '../../../../lib/validation/types'
 import { sortByOrder } from '../../../../lib/values'
 import { friendlyName } from '../../names'
@@ -47,8 +47,6 @@ const KIND_TABS: Record<DependencyNodeKind, StudioTabId> = {
   rule: 'rules',
   bom: 'bom',
 }
-
-const CYCLE_CHECKS = new Set<ValidationIssue['check']>(['formula_cycle', 'fixed_point'])
 
 export function dependencyNodeId(kind: DependencyNodeKind, key: string): string {
   return `${kind}:${key}`
@@ -173,7 +171,7 @@ export function buildDependencyGraph(definition: StudioDefinition, issues: reado
     if (line.ruleId) addEdge(target, dependencyNodeId('rule', line.ruleId), 'surcharge')
   }
 
-  const cycleIssues = issues.filter((issue) => CYCLE_CHECKS.has(issue.check))
+  const cycleIssues = [...checkFormulaCycles(definition), ...issues.filter((issue) => issue.check === 'fixed_point')]
   const groups = cycleGroups(cycleIssues)
   const inCycle = (id: string) => groups.some((group) => group.has(id))
   const edgeList = [...edges.values()].map((edge) => ({

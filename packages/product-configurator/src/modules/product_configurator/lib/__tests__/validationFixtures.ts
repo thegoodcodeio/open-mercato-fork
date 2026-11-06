@@ -21,6 +21,7 @@ export type FakeCatalogOptions = {
   ambiguous?: string[]
   productMissing?: boolean
   priceKindMissing?: boolean
+  priceKindCurrency?: string | null
 }
 
 export function fakeCatalog(options: FakeCatalogOptions = {}) {
@@ -31,7 +32,7 @@ export function fakeCatalog(options: FakeCatalogOptions = {}) {
     else items.delete(sku)
   }
   const ambiguous = new Set(options.ambiguous ?? [])
-  const priceKind: PriceKindRef = { id: PRICE_KIND_ID, code: 'regular', currencyCode: 'EUR', isPromotion: false }
+  const priceKind: PriceKindRef = { id: PRICE_KIND_ID, code: 'regular', currencyCode: options.priceKindCurrency === undefined ? 'EUR' : options.priceKindCurrency, isPromotion: false }
 
   const resolveSkus = jest.fn(async (skus: string[]) => ({
     items: new Map(

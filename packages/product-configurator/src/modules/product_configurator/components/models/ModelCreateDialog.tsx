@@ -11,7 +11,7 @@ import { createCrudFormError } from '@open-mercato/ui/backend/utils/serverErrors
 import { Button } from '@open-mercato/ui/primitives/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@open-mercato/ui/primitives/dialog'
 import { MODEL_KEY_PATTERN } from '../../data/validators'
-import { activePriceKindLookupSource, loadCurrencyOptions, productLookupSource } from './lookups'
+import { activePriceKindLookupSource, loadCurrencyOptions, loadPriceKindCurrency, productLookupSource } from './lookups'
 import { MODELS_API_PATH } from './modelsApi'
 
 const REQUIRED_MESSAGE = 'ui.forms.errors.required'
@@ -131,6 +131,15 @@ export function ModelCreateDialog({ open, onOpenChange, onCreated }: ModelCreate
   const handleSubmit = React.useCallback(
     async (values: ModelCreateFormValues) => {
       const payload = modelCreateFormSchema.parse(values)
+      const priceKindCurrency = await loadPriceKindCurrency(payload.priceKindId)
+      if (priceKindCurrency && priceKindCurrency !== payload.currencyCode) {
+        const message = t(
+          'product_configurator.models.create.errors.priceKindCurrency',
+          'This price kind is for {priceKindCurrency}. Pick one for {currencyCode} or one without a currency.',
+          { priceKindCurrency, currencyCode: payload.currencyCode },
+        )
+        throw createCrudFormError(message, { priceKindId: message })
+      }
       try {
         const call = await createCrud<{ id?: string | null }>(MODELS_API_PATH, payload, {
           errorMessage: t('product_configurator.models.create.errors.failed', 'Failed to create the model.'),

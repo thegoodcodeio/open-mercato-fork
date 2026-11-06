@@ -140,7 +140,7 @@ describe('GET /catalog-items', () => {
 describe('GET /price-kinds', () => {
   const PRICE_KIND_ID = '66666666-6666-4666-8666-666666666666'
   const rows = [
-    { id: PRICE_KIND_ID, code: 'regular', title: 'Regular price', is_active: true },
+    { id: PRICE_KIND_ID, code: 'regular', title: 'Regular price', currency_code: 'EUR', is_active: true },
     { id: '77777777-7777-4777-8777-777777777777', code: 'b2b-net', title: 'Wholesale', is_active: true },
     { id: '88888888-8888-4888-8888-888888888888', code: 'promo', title: 'Spring sale', is_active: true },
   ]
@@ -161,7 +161,8 @@ describe('GET /price-kinds', () => {
     expect(response.status).toBe(200)
     const body = await response.json()
     expect(body.items).toHaveLength(3)
-    expect(body.items[0]).toEqual({ id: PRICE_KIND_ID, code: 'regular', title: 'Regular price', isActive: true })
+    expect(body.items[0]).toEqual({ id: PRICE_KIND_ID, code: 'regular', title: 'Regular price', currencyCode: 'EUR', isActive: true })
+    expect(body.items[1]).toMatchObject({ code: 'b2b-net', currencyCode: null })
     expect(queryMock).toHaveBeenCalledWith(
       'catalog:catalog_price_kind',
       expect.objectContaining({
@@ -256,21 +257,39 @@ describe('PUT /models', () => {
 
 describe('GET /models list filters', () => {
   const query = { page: 1, pageSize: 25 }
+  const auth = { sub: 'user-1', tenantId: TENANT_ID, orgId: ORG_ID }
+  const OTHER_ORG_ID = '66666666-6666-4666-8666-666666666666'
+  const ctx = (selectedOrganizationId: string | null, organizationIds: string[] | null = selectedOrganizationId ? [selectedOrganizationId] : null) =>
+    ({ selectedOrganizationId, organizationIds, auth }) as unknown as Parameters<typeof buildModelListFilters>[1]
 
-  it('lists only the selected organization, not its child organizations', () => {
-    expect(buildModelListFilters(query, { selectedOrganizationId: ORG_ID })).toEqual({ organization_id: { $eq: ORG_ID } })
-  })
-
-  it('keeps the scope filter next to the query filters', () => {
-    expect(buildModelListFilters({ ...query, id: MODEL_ID, search: 'pump' }, { selectedOrganizationId: ORG_ID })).toEqual({
+  it('scopes to the tenant and only the selected organization, not its child organizations', () => {
+    expect(buildModelListFilters(query, ctx(ORG_ID, [ORG_ID, OTHER_ORG_ID]))).toEqual({
+      tenant_id: { $eq: TENANT_ID },
       organization_id: { $eq: ORG_ID },
-      id: { $eq: MODEL_ID },
-      $or: [{ title: { $ilike: '%pump%' } }, { model_key: { $ilike: '%pump%' } }],
     })
   })
 
-  it('leaves the organization to the automatic scope when all organizations are selected', () => {
-    expect(buildModelListFilters(query, { selectedOrganizationId: null })).toEqual({})
+  it('searches title and key with an escaped plain contains match next to the other filters', () => {
+    expect(buildModelListFilters({ ...query, id: MODEL_ID, search: '50%_off' }, ctx(ORG_ID))).toEqual({
+      tenant_id: { $eq: TENANT_ID },
+      organization_id: { $eq: ORG_ID },
+      id: { $eq: MODEL_ID },
+      $or: [{ title: { $ilike: '%50\\%\\_off%' } }, { model_key: { $ilike: '%50\\%\\_off%' } }],
+    })
+  })
+
+  it('keeps every allowed organization when all organizations are selected, and the tenant only when unrestricted', () => {
+    expect(buildModelListFilters(query, ctx(null, [ORG_ID, OTHER_ORG_ID]))).toEqual({
+      tenant_id: { $eq: TENANT_ID },
+      organization_id: { $in: [ORG_ID, OTHER_ORG_ID] },
+    })
+    expect(buildModelListFilters(query, ctx(null, null))).toEqual({ tenant_id: { $eq: TENANT_ID } })
+  })
+
+  it('matches nothing without a tenant or with no allowed organization', () => {
+    expect(buildModelListFilters(query, ctx(null, []))).toEqual({ id: { $in: [] } })
+    const noTenant = { selectedOrganizationId: ORG_ID, organizationIds: [ORG_ID], auth: null } as unknown as Parameters<typeof buildModelListFilters>[1]
+    expect(buildModelListFilters(query, noTenant)).toEqual({ id: { $in: [] } })
   })
 })
 

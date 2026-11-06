@@ -7,6 +7,7 @@ import { ModelCreateDialog, modelCreateFormSchema, type ModelCreateFormValues } 
 
 const createCrudMock = jest.fn()
 const flashMock = jest.fn()
+const loadPriceKindCurrencyMock = jest.fn()
 
 type CapturedFormProps = {
   fields: Array<{ id: string; type: string; required?: boolean }>
@@ -34,6 +35,7 @@ jest.mock('../lookups', () => ({
   productLookupSource: { id: 'products', search: jest.fn(), resolve: jest.fn() },
   activePriceKindLookupSource: { id: 'price-kinds', search: jest.fn(), resolve: jest.fn() },
   loadCurrencyOptions: jest.fn(async () => []),
+  loadPriceKindCurrency: (...args: unknown[]) => loadPriceKindCurrencyMock(...args),
 }))
 
 jest.mock('@open-mercato/ui/backend/CrudForm', () => ({
@@ -58,6 +60,8 @@ describe('ModelCreateDialog', () => {
   beforeEach(() => {
     createCrudMock.mockReset()
     flashMock.mockReset()
+    loadPriceKindCurrencyMock.mockReset()
+    loadPriceKindCurrencyMock.mockResolvedValue(null)
     crudFormProps = null
   })
 
@@ -97,6 +101,21 @@ describe('ModelCreateDialog', () => {
     expect(flashMock).toHaveBeenCalledWith('Model created', 'success')
     expect(onOpenChange).toHaveBeenCalledWith(false)
     expect(onCreated).toHaveBeenCalledWith('model-9')
+  })
+
+  it('refuses a price kind bound to another currency than the model', async () => {
+    loadPriceKindCurrencyMock.mockResolvedValue('USD')
+    render(<ModelCreateDialog open onOpenChange={jest.fn()} onCreated={jest.fn()} />)
+    await expect(crudFormProps?.onSubmit(validValues)).rejects.toMatchObject({
+      fieldErrors: { priceKindId: 'This price kind is for {priceKindCurrency}. Pick one for {currencyCode} or one without a currency.' },
+    })
+    expect(loadPriceKindCurrencyMock).toHaveBeenCalledWith(PRICE_KIND_ID)
+    expect(createCrudMock).not.toHaveBeenCalled()
+
+    loadPriceKindCurrencyMock.mockResolvedValue('EUR')
+    createCrudMock.mockResolvedValue({ ok: true, result: { id: 'model-9' } })
+    await crudFormProps?.onSubmit(validValues)
+    expect(createCrudMock).toHaveBeenCalled()
   })
 
   it('maps a duplicate key to the key field', async () => {

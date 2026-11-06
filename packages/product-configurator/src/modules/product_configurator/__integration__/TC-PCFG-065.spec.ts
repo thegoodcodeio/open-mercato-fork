@@ -74,18 +74,25 @@ test.describe('TC-PCFG-065: a view-only user reads published versions, never the
         { name: 'om_selected_org', value: scope.organizationId, url: baseUrl, sameSite: 'Lax' },
       ])
 
+      const forbidden: string[] = []
+      page.on('response', (response) => {
+        if (response.status() === 403) forbidden.push(`${response.request().method()} ${response.url()}`)
+      })
       await page.goto(MODELS_LIST_URL, { waitUntil: 'domcontentloaded' })
       await expect(page.getByText(publishedTitle, { exact: true })).toBeVisible({ timeout: 30_000 })
       await expect(page.getByRole('button', { name: 'Create model' })).toHaveCount(0)
+      await expect(page.getByRole('columnheader', { name: 'Product' }), 'no catalog product names without catalog.products.view').toHaveCount(0)
 
       await page.getByText(draftTitle, { exact: true }).click()
       await expect(page, 'an unpublished model has nothing a view-only user may open').toHaveURL(new RegExp(`${MODELS_LIST_URL}$`))
+      await expect(page.getByText(/Access denied/)).toHaveCount(0)
 
       await page.getByText(publishedTitle, { exact: true }).click()
       await expect(page).toHaveURL(new RegExp(`${versionUrl(publishedId, modelVersionId)}$`))
       await expect(page.getByRole('heading', { name: 'Version 1' })).toBeVisible({ timeout: 30_000 })
       await expect(page.getByRole('link', { name: 'Back to models' })).toHaveAttribute('href', MODELS_LIST_URL)
       await expect(page.getByRole('link', { name: 'Back to studio' })).toHaveCount(0)
+      expect(forbidden, 'the list and the version page make no request the viewer may not make').toEqual([])
 
       await page.goto(`${MODELS_LIST_URL}/${publishedId}/versions/not-a-version`, { waitUntil: 'domcontentloaded' })
       await expect(page.getByText('This published version was not found.')).toBeVisible({ timeout: 30_000 })

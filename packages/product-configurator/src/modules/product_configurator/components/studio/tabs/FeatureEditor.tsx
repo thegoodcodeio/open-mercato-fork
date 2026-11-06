@@ -91,7 +91,10 @@ export function FeatureEditor({ feature, nextOrder, definition, otherKeys, issue
     onSave(result.feature)
   }
 
-  const changeType = (type: FeatureType) => set({ type, defaultValue: type === 'boolean' ? 'false' : '' })
+  const changeType = (type: FeatureType) => {
+    const unit = type === 'number' ? values.unit : type === feature?.type ? (feature.unit ?? '') : ''
+    set({ type, defaultValue: type === 'boolean' ? 'false' : '', unit })
+  }
 
   const defaultControl = () => {
     if (values.type === 'boolean' || (hasOptions && defaultOptions.length > 0)) {
@@ -196,21 +199,16 @@ export function FeatureEditor({ feature, nextOrder, definition, otherKeys, issue
               disabled={disabled}
               onChange={(options) => set({ options })}
             />
-            <div className="grid gap-3 md:grid-cols-4">
-              <div className="md:col-span-3">
-                <FormField id={fieldId('lookup')} label={t('product_configurator.studio.features.lookup', 'Options from a permitted lookup')} error={error('optionsFromLookup')}>
-                  <KeySelect
-                    id={fieldId('lookup')}
-                    value={values.optionsFromLookup || NO_LOOKUP}
-                    options={lookupOptions}
-                    onChange={(next) => set({ optionsFromLookup: next === NO_LOOKUP ? '' : next })}
-                    disabled={disabled}
-                    {...selectErrorProps('lookup', 'optionsFromLookup')}
-                  />
-                </FormField>
-              </div>
-              {unitField}
-            </div>
+            <FormField id={fieldId('lookup')} label={t('product_configurator.studio.features.lookup', 'Options from a permitted lookup')} error={error('optionsFromLookup')}>
+              <KeySelect
+                id={fieldId('lookup')}
+                value={values.optionsFromLookup || NO_LOOKUP}
+                options={lookupOptions}
+                onChange={(next) => set({ optionsFromLookup: next === NO_LOOKUP ? '' : next })}
+                disabled={disabled}
+                {...selectErrorProps('lookup', 'optionsFromLookup')}
+              />
+            </FormField>
             <p className="text-xs text-muted-foreground">
               {t('product_configurator.studio.features.lookupHint', 'A permitted lookup limits the options by another feature and gives the allowed values. Options listed here give their labels.')}
             </p>

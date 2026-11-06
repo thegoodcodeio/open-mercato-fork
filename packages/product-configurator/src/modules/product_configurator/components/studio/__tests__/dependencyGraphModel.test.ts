@@ -182,6 +182,27 @@ describe('buildDependencyGraph', () => {
     ])
   })
 
+  it('finds formula loops in the current draft and ignores formula loops of an older report', () => {
+    const input = definitionInput()
+    input.formulas.push({ key: 'loop_a', expr: { kind: 'formula', formulaKey: 'loop_b' } }, { key: 'loop_b', expr: { kind: 'formula', formulaKey: 'loop_a' } })
+    const stale: ValidationIssue = {
+      check: 'formula_cycle',
+      code: 'formula_cycle',
+      params: { formulaKeys: ['pipe_meters'] },
+      refs: [{ kind: 'formula', key: 'pipe_meters' }],
+    }
+    const graph = buildDependencyGraph(parseDefinition(input), [stale])
+    expect(graph.cycleIssues).toEqual([
+      {
+        check: 'formula_cycle',
+        code: 'formula_cycle',
+        params: { formulaKeys: ['loop_a', 'loop_b'] },
+        refs: [{ kind: 'formula', key: 'loop_a' }, { kind: 'formula', key: 'loop_b' }],
+      },
+    ])
+    expect(graph.nodes.filter((node) => node.inCycle).map((node) => node.id).sort((left, right) => left.localeCompare(right))).toEqual(['formula:loop_a', 'formula:loop_b'])
+  })
+
   it('keeps the first row of a duplicate key', () => {
     const input = definitionInput()
     input.lookups.push({ kind: 'value', key: 'factor', label: 'Second factor', keyedBy: 'length', rows: [] })

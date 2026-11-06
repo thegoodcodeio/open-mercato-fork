@@ -110,6 +110,17 @@ describe('rule row editor form', () => {
     })
   })
 
+  it('refuses a set value outside the range, off the step or not an option of the field', () => {
+    const values = { ...ruleToForm(undefined, 10, definition), id: 'force_length', effect: 'force' as const }
+    const setLength = (setValue: number | string, featureKey = 'length') =>
+      formToRule({ ...values, action: { ...values.action, kind: 'set' as const, featureKey, setValue } }, [], definition)
+    expect(setLength(25)).toEqual({ ok: false, errors: { 'action.setValue': RULE_ERROR_KEYS.valueOutOfRange } })
+    expect(setLength(0)).toEqual({ ok: false, errors: { 'action.setValue': RULE_ERROR_KEYS.valueOutOfRange } })
+    expect(setLength(2.3)).toEqual({ ok: false, errors: { 'action.setValue': RULE_ERROR_KEYS.valueOffStep } })
+    expect(setLength('turbo', 'motor')).toEqual({ ok: false, errors: { 'action.setValue': RULE_ERROR_KEYS.valueNotAnOption } })
+    expect(setLength(2.5).ok).toBe(true)
+  })
+
   it('reads the order as a decimal integer only', () => {
     const values = { ...ruleToForm(RULES[1], 0, definition) }
     for (const order of ['0x10', '0b10', '0o7', 'Infinity', '', '  ']) {

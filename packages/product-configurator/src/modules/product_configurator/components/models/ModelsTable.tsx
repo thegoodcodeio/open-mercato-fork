@@ -19,6 +19,7 @@ import { ModelCreateDialog } from './ModelCreateDialog'
 import { ModelPublishStateBadge } from './ModelPublishStateBadge'
 import { loadCurrencyOptions, productLookupSource } from './lookups'
 import {
+  CATALOG_PRODUCTS_VIEW_FEATURE,
   MODEL_ENTITY_ID,
   MODELS_API_URL,
   MODELS_LIST_PAGE_SIZE,
@@ -49,6 +50,7 @@ export function ModelsTable() {
   const scopeVersion = useOrganizationScopeVersion()
   const { payload: chrome } = useBackendChrome()
   const canManage = hasFeature(chrome?.grantedFeatures, MODELS_MANAGE_FEATURE)
+  const canViewProducts = hasFeature(chrome?.grantedFeatures, CATALOG_PRODUCTS_VIEW_FEATURE)
   const [page, setPage] = React.useState(1)
   const [search, setSearch] = React.useState('')
   const [filterValues, setFilterValues] = React.useState<FilterValues>({})
@@ -91,7 +93,10 @@ export function ModelsTable() {
     }
   }, [query, scopeVersion, loadErrorMessage])
 
-  const productIds = React.useMemo(() => data.items.map((item) => item.productId).filter(Boolean), [data.items])
+  const productIds = React.useMemo(
+    () => (canViewProducts ? data.items.map((item) => item.productId).filter(Boolean) : []),
+    [canViewProducts, data.items],
+  )
   const productLabels = useLookupLabelMap(productLookupSource, productIds)
   const dateFormatter = React.useMemo(
     () => new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }),
@@ -127,6 +132,7 @@ export function ModelsTable() {
         header: t('product_configurator.models.list.columns.title', 'Title'),
         enableSorting: true,
         meta: { priority: 1 },
+        cell: ({ row }) => <span title={row.original.title}>{row.original.title}</span>,
       },
       {
         id: 'modelKey',
@@ -136,13 +142,18 @@ export function ModelsTable() {
         meta: { priority: 2 },
         cell: ({ row }) => <span className="font-mono text-sm">{row.original.modelKey}</span>,
       },
-      {
-        id: 'product',
-        header: t('product_configurator.models.list.columns.product', 'Product'),
-        enableSorting: false,
-        meta: { priority: 3 },
-        cell: ({ row }) => productLabels[row.original.productId] ?? <span className="text-muted-foreground">—</span>,
-      },
+      ...(canViewProducts
+        ? [
+            {
+              id: 'product',
+              header: t('product_configurator.models.list.columns.product', 'Product'),
+              enableSorting: false,
+              meta: { priority: 3 },
+              cell: ({ row }: { row: { original: ModelListItem } }) =>
+                productLabels[row.original.productId] ?? <span className="text-muted-foreground">—</span>,
+            },
+          ]
+        : []),
       {
         id: 'currencyCode',
         accessorKey: 'currencyCode',
@@ -166,7 +177,7 @@ export function ModelsTable() {
         cell: ({ row }) => (row.original.updatedAt ? dateFormatter.format(new Date(row.original.updatedAt)) : null),
       },
     ],
-    [dateFormatter, productLabels, t],
+    [canViewProducts, dateFormatter, productLabels, t],
   )
 
   const hasActiveFilters = filters.published !== null || filters.currencyCode !== null || search.trim().length > 0
@@ -241,10 +252,6 @@ export function ModelsTable() {
               ]}
             />
           )
-        }}
-        onRowClick={(row) => {
-          const target = resolveModelOpenTarget(row, canManage)
-          if (target) router.push(target.href)
         }}
         emptyState={(
           <ListEmptyState

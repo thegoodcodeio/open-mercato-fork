@@ -16,7 +16,7 @@ import { featureName, friendlyName } from '../names'
 import { problemCountLabel } from '../pluralLabel'
 import { LookupEditor } from './lookups/LookupEditor'
 import { keyDomain, missingMatches } from './lookups/lookupForm'
-import { applyReferenceChanges, useReferenceChangesSince } from './rowEditorSession'
+import { applyReferenceChanges, useReferenceChangesSince, useRevealRowEditor } from './rowEditorSession'
 import { STUDIO_NEW_ROW_KEY, type StudioDefinition, type StudioTabProps } from './types'
 
 const KIND_LABELS: Record<Lookup['kind'], { key: string; fallback: string }> = {
@@ -44,9 +44,7 @@ export function LookupsTab({
   const editorRef = React.useRef<HTMLDivElement>(null)
   const changesSinceOpen = useReferenceChangesSince(selectedKey, referenceChanges)
 
-  React.useEffect(() => {
-    if (editorOpen) editorRef.current?.scrollIntoView?.({ block: 'nearest' })
-  }, [editorOpen, selectedKey])
+  useRevealRowEditor(editorRef, editorOpen, selectedKey)
 
   const removeLookup = React.useCallback(
     async (lookup: Lookup) => {
@@ -152,30 +150,32 @@ export function LookupsTab({
 
   return (
     <div className="space-y-4">
-      <DataTable<Lookup>
-        embedded
-        title={t('product_configurator.studio.lookups.title', 'Lookups')}
-        columns={columns}
-        data={lookups}
-        actions={
-          <Button type="button" onClick={() => onSelectKey(STUDIO_NEW_ROW_KEY)} disabled={readOnly}>
-            <Plus className="size-4" aria-hidden="true" />
-            {t('product_configurator.studio.lookups.add', 'Add lookup')}
-          </Button>
-        }
-        onRowClick={(lookup) => onSelectKey(lookup.key)}
-        rowActions={(lookup) => (
-          <RowActions
-            items={[
-              { id: 'edit', label: t('ui.actions.edit', 'Edit'), onSelect: () => onSelectKey(lookup.key) },
-              ...(readOnly
-                ? []
-                : [{ id: 'delete', label: t('ui.actions.delete', 'Delete'), destructive: true, onSelect: () => void removeLookup(lookup) }]),
-            ]}
-          />
-        )}
-        emptyState={t('product_configurator.studio.lookups.empty', 'No lookups yet. Add one to map a choice to a value, a SKU or a list of allowed options.')}
-      />
+      <div className="overflow-x-auto">
+        <DataTable<Lookup>
+          embedded
+          title={t('product_configurator.studio.lookups.title', 'Lookups')}
+          columns={columns}
+          data={lookups}
+          actions={
+            <Button type="button" onClick={() => onSelectKey(STUDIO_NEW_ROW_KEY)} disabled={readOnly}>
+              <Plus className="size-4" aria-hidden="true" />
+              {t('product_configurator.studio.lookups.add', 'Add lookup')}
+            </Button>
+          }
+          onRowClick={(lookup) => onSelectKey(lookup.key)}
+          rowActions={(lookup) => (
+            <RowActions
+              items={[
+                { id: 'edit', label: t('ui.actions.edit', 'Edit'), onSelect: () => onSelectKey(lookup.key) },
+                ...(readOnly
+                  ? []
+                  : [{ id: 'delete', label: t('ui.actions.delete', 'Delete'), destructive: true, onSelect: () => void removeLookup(lookup) }]),
+              ]}
+            />
+          )}
+          emptyState={t('product_configurator.studio.lookups.empty', 'No lookups yet. Add one to map a choice to a value, a SKU or a list of allowed options.')}
+        />
+      </div>
       {editorOpen ? (
         <div ref={editorRef}>
           <LookupEditor
