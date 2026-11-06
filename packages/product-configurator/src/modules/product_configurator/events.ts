@@ -10,6 +10,12 @@ const events = [
     entity: 'model_version',
     category: 'lifecycle',
   },
+  {
+    id: 'product_configurator.snapshot.created',
+    label: 'Product Configuration Added to Quote',
+    entity: 'snapshot',
+    category: 'lifecycle',
+  },
 ] as const
 
 export const eventsConfig = createModuleEvents({ moduleId: 'product_configurator', events })

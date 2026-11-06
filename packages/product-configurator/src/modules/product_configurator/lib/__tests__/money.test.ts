@@ -6,6 +6,7 @@ import {
   parseDecimal,
   rescale,
   roundNumber,
+  sameDecimal,
   toScaled,
   toScaledExact,
 } from '../money'
@@ -18,6 +19,35 @@ describe('money', () => {
     expect(parseDecimal('2e3')).toEqual({ coefficient: 2000n, scale: 0 })
     expect(() => parseDecimal('1,5')).toThrow('[internal]')
     expect(() => parseDecimal(Number.NaN)).toThrow('[internal]')
+  })
+
+  it('refuses exponents beyond the range of a JS number instead of building huge powers', () => {
+    expect(parseDecimal(Number.MIN_VALUE)).toEqual({ coefficient: 5n, scale: 324 })
+    expect(() => parseDecimal('1e100000000')).toThrow('exponent out of range')
+    expect(() => toScaled('1e-100000000', 4)).toThrow('exponent out of range')
+  })
+
+  it('compares decimals exactly at any scale', () => {
+    expect(sameDecimal('1', '1.0000')).toBe(true)
+    expect(sameDecimal(1, '1.0000')).toBe(true)
+    expect(sameDecimal('1e0', '1.0000')).toBe(true)
+    expect(sameDecimal('0.0', '-0')).toBe(true)
+    expect(sameDecimal('1234.56', '1234.5600')).toBe(true)
+    expect(sameDecimal('00012.50', '12.5')).toBe(true)
+    expect(sameDecimal('1.00004', '1.0000')).toBe(false)
+    expect(sameDecimal(0.1 + 0.2, '0.3000')).toBe(false)
+    expect(sameDecimal('-1', '1')).toBe(false)
+    expect(sameDecimal('1e100000000', '1')).toBe(false)
+    expect(sameDecimal('abc', '1')).toBe(false)
+  })
+
+  it('refuses an oversized decimal quickly instead of scanning it', () => {
+    const startedAt = Date.now()
+    expect(sameDecimal(`1${'0'.repeat(100_000)}1`, '1')).toBe(false)
+    expect(sameDecimal(`${'0'.repeat(100_000)}x`, '0')).toBe(false)
+    expect(Date.now() - startedAt).toBeLessThan(200)
+    expect(() => parseDecimal(`1.${'0'.repeat(64)}`)).toThrow('[internal]')
+    expect(sameDecimal(`0.${'0'.repeat(30)}1`, `0.${'0'.repeat(30)}1000`)).toBe(true)
   })
 
   it('rounds half-up away from zero', () => {

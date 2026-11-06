@@ -6,6 +6,7 @@ import { FormulasTab } from './FormulasTab'
 import { LookupsTab } from './LookupsTab'
 import { OverviewTab } from './OverviewTab'
 import { RulesTab } from './RulesTab'
+import { TestTab } from './TestTab'
 import type { StudioTabDefinition, StudioTabId } from './types'
 
 export const STUDIO_TABS: readonly StudioTabDefinition[] = [
@@ -21,6 +22,7 @@ export const STUDIO_TABS: readonly StudioTabDefinition[] = [
     fallbackLabel: 'Dependencies',
     component: DependenciesTab,
   },
+  { id: 'test', labelKey: 'product_configurator.studio.tabs.test', fallbackLabel: 'Test', component: TestTab },
   { id: 'advanced', labelKey: 'product_configurator.studio.tabs.advanced', fallbackLabel: 'Advanced (JSON)', component: AdvancedJsonTab },
 ]
 

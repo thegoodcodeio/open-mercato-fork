@@ -7,6 +7,7 @@ import { expectId, readJsonSafe } from '@open-mercato/core/helpers/integration/g
 export const MODELS_PATH = '/api/product_configurator/models'
 export const VALIDATE_PATH = '/api/product_configurator/models/validate'
 export const PUBLISH_PATH = '/api/product_configurator/models/publish'
+export const PREVIEW_PATH = '/api/product_configurator/models/preview'
 export const VERSIONS_PATH = '/api/product_configurator/model-versions'
 export const CATALOG_ITEMS_PATH = '/api/product_configurator/catalog-items'
 export const MODEL_RESOURCE_KIND = 'product_configurator.model'
