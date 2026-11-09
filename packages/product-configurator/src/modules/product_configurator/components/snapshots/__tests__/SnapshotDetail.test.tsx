@@ -61,7 +61,10 @@ const snapshot = {
     { label: 'Pipe length', value: 2.5, unit: 'm' },
     { label: 'Weather cover', value: true, unit: null },
   ],
-  calculatedRows: [{ label: 'Pipe meters', value: 3.25, unit: 'm' }],
+  calculatedRows: [
+    { label: 'Pipe meters', value: 3.25, unit: 'm' },
+    { label: 'Rail length', value: 6, unit: 'm', decimals: 1 },
+  ],
   specification: [{ label: 'Housing', value: 'Cast iron' }],
   bom: [{ sku: 'PUMP-BASE', label: 'Pump base', quantity: '1', uom: 'pc', unitPrice: '1000.0000', total: '1000.00' }],
   netPrice: '1250.00',
@@ -88,6 +91,7 @@ describe('SnapshotDetail', () => {
     expect(within(choices).getByText('2.5 m')).toBeTruthy()
     expect(within(choices).getByText('Yes')).toBeTruthy()
     expect(within(screen.getByTestId('snapshot-calculated')).getByText('3.25 m')).toBeTruthy()
+    expect(within(screen.getByTestId('snapshot-calculated')).getByText('6.0 m')).toBeTruthy()
     expect(within(screen.getByTestId('snapshot-specification')).getByText('Cast iron')).toBeTruthy()
     expect(screen.getByTestId('snapshot-warnings').textContent).toContain('Heavy motors need a reinforced base.')
     expect(within(screen.getByTestId('snapshot-bom')).getByText('PUMP-BASE')).toBeTruthy()

@@ -1,8 +1,14 @@
 import { z } from 'zod'
+import { ORGANIZATION_SCOPE_REQUIRED_ERROR_CODE } from '@open-mercato/shared/lib/auth/organizationScope'
 
 export const SNAPSHOTS_API = '/api/product_configurator/snapshots'
 
-const rowSchema = z.object({ label: z.string(), value: z.union([z.string(), z.number(), z.boolean()]), unit: z.string().nullable() })
+const rowSchema = z.object({
+  label: z.string(),
+  value: z.union([z.string(), z.number(), z.boolean()]),
+  unit: z.string().nullable(),
+  decimals: z.number().int().optional(),
+})
 
 /** The snapshot read model of `GET /snapshots` (spec "API Contracts"). */
 export const snapshotSchema = z.object({
@@ -31,6 +37,19 @@ export type SnapshotRow = z.infer<typeof rowSchema>
 
 /** `truncated`: the quote has more snapshots than the list returns (only the oldest are listed). */
 export const snapshotListSchema = z.object({ items: z.array(snapshotSchema), truncated: z.boolean().optional() })
+
+/** The API answers 400 `organization_scope_required` while all organizations are selected. */
+export class OrganizationRequiredError extends Error {
+  constructor() {
+    super('[internal] organization_scope_required')
+  }
+}
+
+const errorCodeSchema = z.object({ code: z.string() }).passthrough()
+
+export function isOrganizationRequired(status: number, payload: unknown): boolean {
+  return status === 400 && errorCodeSchema.safeParse(payload).data?.code === ORGANIZATION_SCOPE_REQUIRED_ERROR_CODE
+}
 
 export function snapshotHref(snapshotId: string, quoteId?: string): string {
   const base = `/backend/product_configurator/snapshots/${encodeURIComponent(snapshotId)}`

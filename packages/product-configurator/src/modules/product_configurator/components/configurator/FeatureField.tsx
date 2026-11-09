@@ -13,6 +13,8 @@ import { featureFieldId, featureOptions, type FeatureOption } from './workspaceM
 /** Up to this many options a choice is a radio group; more become a select. */
 const MAX_RADIO_OPTIONS = 5
 
+const ARROW_STEPS: Record<string, 1 | -1> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }
+
 export type FeatureFieldProps = {
   definition: ConfigurationDefinition
   feature: Feature
@@ -39,6 +41,8 @@ export function FeatureField({ definition, feature, value, allowedValues, forced
   const describedBy = [forcedBy ? forcedId : null, serverError ? errorId : null].filter(Boolean).join(' ') || undefined
   const invalid = serverError ? true : undefined
   const current = value === null ? '' : String(value)
+  const chosenRef = React.useRef(current)
+  chosenRef.current = current
   const lockedReason = forcedBy
     ? t('product_configurator.configurator.forced.locked', 'Set automatically by {reason}.', { reason: forcedBy })
     : null
@@ -53,6 +57,25 @@ export function FeatureField({ definition, feature, value, allowedValues, forced
 
   const renderRadios = (options: FeatureOption[], swatches: boolean) => {
     const blocked = options.filter((option) => optionState(option).blocked && !forcedBy)
+    const choose = (option: FeatureOption) => {
+      if (optionState(option).blocked || option.value === chosenRef.current) return
+      chosenRef.current = option.value
+      onChange(option.value)
+    }
+    // Radix moves focus in a timeout and checks the item only while the arrow key is still down, so a quick
+    // press moved focus without choosing. Arrows choose the next available option here, like native radios.
+    const onArrowKey = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+      const step = ARROW_STEPS[event.key]
+      if (!step) return
+      event.preventDefault()
+      for (let offset = 1; offset < options.length; offset += 1) {
+        const target = (index + step * offset + options.length) % options.length
+        if (optionState(options[target]).blocked) continue
+        choose(options[target])
+        event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[target]?.focus()
+        return
+      }
+    }
     return (
       <>
         <SegmentedControl
@@ -64,15 +87,16 @@ export function FeatureField({ definition, feature, value, allowedValues, forced
           className="h-auto flex-wrap"
           onValueChange={(next) => {
             const option = options.find((entry) => entry.value === next)
-            if (option && !optionState(option).blocked) onChange(option.value)
+            if (option) choose(option)
           }}
         >
-          {options.map((option) => {
+          {options.map((option, index) => {
             const state = optionState(option)
             return (
               <SegmentedControlItem
                 key={option.value}
                 value={option.value}
+                onKeyDown={(event) => onArrowKey(event, index)}
                 aria-disabled={state.blocked || undefined}
                 aria-describedby={state.reasonId}
                 className={cn(state.blocked && 'text-muted-foreground line-through opacity-60')}

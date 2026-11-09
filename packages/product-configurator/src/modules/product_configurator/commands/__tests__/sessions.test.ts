@@ -320,6 +320,35 @@ describe('product_configurator.sessions.evaluate', () => {
     expect(lockCall?.[3]).toMatchObject({ lockMode: LockMode.PESSIMISTIC_WRITE, refresh: true })
   })
 
+  it('stores a fresh result of the stored choices but keeps the revision, so opening a session in another window is no change', async () => {
+    const { em } = makeEm()
+    const stored = session({ selections: { size: 's', color: 'red' } })
+    rows({ version: version(), sessions: [session({ selections: { size: 's', color: 'red' } }), stored] })
+    evaluateConfigurationMock.mockResolvedValue(evaluation)
+
+    const result = await evaluate.execute({ id: SESSION_ID, revision: 2, selections: { color: 'red', size: 's', finish: null } }, makeCtx(em))
+
+    expect(result).toEqual({ id: SESSION_ID, status: 'open', revision: 2, selections: { color: 'red', size: 's' }, evaluation })
+    expect(stored).toMatchObject({ revision: 2, evaluation })
+    expect(em.flush).toHaveBeenCalled()
+  })
+
+  it.each([
+    ['a changed value', { size: 'l' }],
+    ['a cleared choice', {}],
+    ['an added choice', { size: 's', color: 'red' }],
+  ])('bumps the revision for %s', async (_label, selections) => {
+    const { em } = makeEm()
+    const stored = session()
+    rows({ version: version(), sessions: [session(), stored] })
+    evaluateConfigurationMock.mockResolvedValue(evaluation)
+
+    const result = await evaluate.execute({ id: SESSION_ID, revision: 2, selections }, makeCtx(em))
+
+    expect(result.revision).toBe(3)
+    expect(stored).toMatchObject({ revision: 3, selections })
+  })
+
   it('answers session_changed with the current state for a stale revision, before evaluating', async () => {
     const { em } = makeEm()
     rows({ sessions: [session({ revision: 5 })] })

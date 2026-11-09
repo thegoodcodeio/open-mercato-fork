@@ -91,7 +91,8 @@ export function SnapshotDetail({ snapshotId }: { snapshotId: string }) {
 
   const { snapshot } = load
   const money = (value: string) => formatCurrency(value, snapshot.currencyCode, locale) ?? value
-  const number = (value: string | number) => new Intl.NumberFormat(locale).format(Number(value))
+  const number = (value: string | number, decimals?: number) =>
+    new Intl.NumberFormat(locale, decimals === undefined ? undefined : { minimumFractionDigits: decimals, maximumFractionDigits: decimals }).format(Number(value))
   const rowValue = (row: SnapshotRow) => {
     const value =
       typeof row.value === 'boolean'
@@ -99,7 +100,7 @@ export function SnapshotDetail({ snapshotId }: { snapshotId: string }) {
           ? t('product_configurator.configurator.values.yes', 'Yes')
           : t('product_configurator.configurator.values.no', 'No')
         : typeof row.value === 'number'
-          ? number(row.value)
+          ? number(row.value, row.decimals)
           : row.value
     return row.unit ? `${value} ${row.unit}` : value
   }
@@ -134,8 +135,8 @@ export function SnapshotDetail({ snapshotId }: { snapshotId: string }) {
           )
         }
       />
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,20rem)]">
-        <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,20rem)]">
+        <div className="min-w-0 space-y-4">
           <Section title={t('product_configurator.snapshot.sections.choices', 'Choices')} testId="snapshot-choices">
             {snapshot.selectionRows.length ? (
               <RowList rows={snapshot.selectionRows.map((row) => ({ label: row.label, value: rowValue(row) }))} />
@@ -163,33 +164,35 @@ export function SnapshotDetail({ snapshotId }: { snapshotId: string }) {
             </Section>
           ) : null}
           <Section title={t('product_configurator.snapshot.sections.bom', 'Bill of materials')} testId="snapshot-bom">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>{t('product_configurator.snapshot.bom.sku', 'SKU')}</TableHead>
-                  <TableHead>{t('product_configurator.configurator.bom.part', 'Part')}</TableHead>
-                  <TableHead className="text-right">{t('product_configurator.configurator.bom.quantity', 'Qty')}</TableHead>
-                  <TableHead>{t('product_configurator.configurator.bom.unit', 'Unit')}</TableHead>
-                  <TableHead className="text-right">{t('product_configurator.configurator.bom.unitPrice', 'Unit price')}</TableHead>
-                  <TableHead className="text-right">{t('product_configurator.configurator.bom.total', 'Total')}</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {snapshot.bom.map((line, index) => (
-                  <TableRow key={`${line.sku}-${index}`}>
-                    <TableCell className="font-mono text-xs">{line.sku}</TableCell>
-                    <TableCell>{line.label}</TableCell>
-                    <TableCell className="text-right tabular-nums">{number(line.quantity)}</TableCell>
-                    <TableCell>{line.uom}</TableCell>
-                    <TableCell className="text-right tabular-nums">{money(line.unitPrice)}</TableCell>
-                    <TableCell className="text-right tabular-nums">{money(line.total)}</TableCell>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>{t('product_configurator.snapshot.bom.sku', 'SKU')}</TableHead>
+                    <TableHead>{t('product_configurator.configurator.bom.part', 'Part')}</TableHead>
+                    <TableHead className="text-right">{t('product_configurator.configurator.bom.quantity', 'Qty')}</TableHead>
+                    <TableHead>{t('product_configurator.configurator.bom.unit', 'Unit')}</TableHead>
+                    <TableHead className="text-right">{t('product_configurator.configurator.bom.unitPrice', 'Unit price')}</TableHead>
+                    <TableHead className="text-right">{t('product_configurator.configurator.bom.total', 'Total')}</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {snapshot.bom.map((line, index) => (
+                    <TableRow key={`${line.sku}-${index}`}>
+                      <TableCell className="font-mono text-xs">{line.sku}</TableCell>
+                      <TableCell>{line.label}</TableCell>
+                      <TableCell className="text-right tabular-nums">{number(line.quantity)}</TableCell>
+                      <TableCell>{line.uom}</TableCell>
+                      <TableCell className="text-right tabular-nums">{money(line.unitPrice)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{money(line.total)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
           </Section>
         </div>
-        <div className="space-y-4 lg:self-start">
+        <div className="min-w-0 space-y-4 lg:self-start">
           <section className="space-y-1 rounded-lg border border-border bg-card p-4" data-testid="snapshot-net-price">
             <p className="text-xs uppercase text-muted-foreground">
               {t('product_configurator.snapshot.netPrice', 'Configured net price ({currency})', { currency: snapshot.currencyCode })}

@@ -8,6 +8,7 @@ import { Button } from '@open-mercato/ui/primitives/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@open-mercato/ui/primitives/table'
 import { formatCurrency } from '@open-mercato/ui/utils/format'
 import type { ConfigurationDefinition } from '../../data/validators'
+import { pluralLabel } from '../studio/pluralLabel'
 import type { WorkspaceEvaluation } from './evaluationSchema'
 import type { WorkspaceMessage } from './workspaceModel'
 
@@ -72,11 +73,11 @@ export function ConfigurationDetails({ definition, evaluation, messages, onGoToF
             onClick={() => setBomOpen((open) => !open)}
           >
             {bomOpen ? <ChevronDown aria-hidden="true" className="size-4" /> : <ChevronRight aria-hidden="true" className="size-4" />}
-            {t('product_configurator.configurator.bom.title', 'Bill of materials ({count} lines)', { count: evaluation.bom.length })}
+            {pluralLabel(t, locale, 'product_configurator.configurator.bom.titleCount', 'Bill of materials ({count} lines)', evaluation.bom.length)}
           </button>
         </h3>
-        <div id={`${bomId}-bom`} hidden={!bomOpen} className="pt-2">
-          <Table>
+        <div id={`${bomId}-bom`} hidden={!bomOpen} className="overflow-x-auto pt-2">
+          <Table className="text-xs [&_td]:px-1.5 [&_th]:whitespace-normal [&_th]:px-1.5 [&_th]:align-bottom">
             <TableHeader>
               <TableRow>
                 <TableHead>{t('product_configurator.configurator.bom.part', 'Part')}</TableHead>
@@ -89,14 +90,14 @@ export function ConfigurationDetails({ definition, evaluation, messages, onGoToF
             <TableBody>
               {evaluation.bom.map((line) => (
                 <TableRow key={line.bomId}>
-                  <TableCell>
+                  <TableCell className="break-words">
                     <span className="block">{line.label}</span>
-                    <span className="block text-xs text-muted-foreground">{line.sku}</span>
+                    <span className="block text-muted-foreground">{line.sku}</span>
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">{new Intl.NumberFormat(locale).format(Number(line.quantity))}</TableCell>
+                  <TableCell className="whitespace-nowrap text-right tabular-nums">{new Intl.NumberFormat(locale).format(Number(line.quantity))}</TableCell>
                   <TableCell>{line.uom}</TableCell>
-                  <TableCell className="text-right tabular-nums">{money(line.unitPrice)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{money(line.total)}</TableCell>
+                  <TableCell className="whitespace-nowrap text-right tabular-nums">{money(line.unitPrice)}</TableCell>
+                  <TableCell className="whitespace-nowrap text-right tabular-nums">{money(line.total)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>

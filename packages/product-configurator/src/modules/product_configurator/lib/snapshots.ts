@@ -6,7 +6,8 @@ import { sortByOrder } from './values'
 
 export type SnapshotLineState = 'present' | 'removed'
 
-export type SnapshotRow = { label: string; value: string | number | boolean; unit: string | null }
+/** `decimals`: the fraction digits a labelled formula is shown with, when it sets them. */
+export type SnapshotRow = { label: string; value: string | number | boolean; unit: string | null; decimals?: number }
 
 export type SnapshotReadModel = {
   id: string
@@ -64,7 +65,8 @@ function calculatedRows(definition: ConfigurationDefinition | null, calculated: 
   return definition.formulas.flatMap((formula) => {
     const value = calculated[formula.key]
     if (!formula.label || typeof value !== 'number') return []
-    return [{ label: formula.label, value, unit: formula.unit ?? null }]
+    const row: SnapshotRow = { label: formula.label, value, unit: formula.unit ?? null }
+    return [formula.decimals === undefined ? row : { ...row, decimals: formula.decimals }]
   })
 }
 

@@ -166,6 +166,7 @@ const snapshotRowSchema = z.object({
   label: z.string(),
   value: z.union([z.string(), z.number(), z.boolean()]),
   unit: z.string().nullable(),
+  decimals: z.number().int().optional().describe('Fraction digits of a labelled formula, when the formula sets them'),
 })
 
 const snapshotSchema = z.object({

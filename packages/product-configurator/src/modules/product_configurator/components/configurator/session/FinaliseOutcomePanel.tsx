@@ -4,11 +4,22 @@ import * as React from 'react'
 import Link from 'next/link'
 import type { TranslateFn } from '@open-mercato/shared/lib/i18n/context'
 import { useT } from '@open-mercato/shared/lib/i18n/context'
+import { hasFeature } from '@open-mercato/shared/security/features'
+import { useBackendChrome } from '@open-mercato/ui/backend/BackendChromeProvider'
+import { apiCall } from '@open-mercato/ui/backend/utils/apiCall'
 import { Alert, AlertDescription, type AlertStatus } from '@open-mercato/ui/primitives/alert'
 import { Button } from '@open-mercato/ui/primitives/button'
 import type { ConfigurationDefinition } from '../../../data/validators'
 import { failureText } from '../failureMessages'
-import { QUOTES_LIST_HREF, quoteHref, type PanelOutcome } from './sessionApi'
+import {
+  ORDERS_VIEW_FEATURE,
+  QUOTES_LIST_HREF,
+  convertedOrderLookupUrl,
+  convertedQuoteLinkFromResponse,
+  quoteHref,
+  type ConvertedQuoteLink,
+  type PanelOutcome,
+} from './sessionApi'
 import type { PriceChange } from './useSessionWorkspace'
 
 export type OutcomeAction = 'retry' | 'confirm_price' | 'dismiss' | 'discard' | 'open_quote' | 'quotes'
@@ -144,10 +155,32 @@ type FinaliseOutcomePanelProps = {
   onAction: (action: Exclude<OutcomeAction, 'open_quote' | 'quotes'>) => void
 }
 
+/** Where a rep goes from a converted quote: its order once it is found, until then (and without order access) the quotes list. */
+function useConvertedQuoteLink(quoteId: string, converted: boolean): ConvertedQuoteLink {
+  const { payload: chrome } = useBackendChrome()
+  const canViewOrders = hasFeature(chrome?.grantedFeatures, ORDERS_VIEW_FEATURE)
+  const [link, setLink] = React.useState<ConvertedQuoteLink>({ kind: 'quotes', href: QUOTES_LIST_HREF })
+  React.useEffect(() => {
+    if (!converted || !canViewOrders) return
+    let cancelled = false
+    void apiCall<unknown>(convertedOrderLookupUrl(quoteId), { cache: 'no-store' }).then(
+      (call) => {
+        if (!cancelled) setLink(convertedQuoteLinkFromResponse(call.status, call.result, quoteId))
+      },
+      () => undefined,
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [canViewOrders, converted, quoteId])
+  return link
+}
+
 export function FinaliseOutcomePanel({ outcome, definition, priceChange, quoteId, addDisabled, onAction }: FinaliseOutcomePanelProps) {
   const t = useT()
   const panelRef = React.useRef<HTMLDivElement>(null)
   const view = describeOutcome(outcome, { definition, priceChange, t })
+  const convertedLink = useConvertedQuoteLink(quoteId, outcome.kind === 'quote_converted')
 
   React.useEffect(() => {
     panelRef.current?.focus()
@@ -192,7 +225,13 @@ export function FinaliseOutcomePanel({ outcome, definition, priceChange, quoteId
       case 'quotes':
         return (
           <Button key={action} asChild type="button" variant="outline" size="sm">
-            <Link href={QUOTES_LIST_HREF}>{t('product_configurator.configurator.goToQuotes', 'Go to quotes')}</Link>
+            <Link href={convertedLink.href}>
+              {convertedLink.kind === 'order'
+                ? t('product_configurator.configurator.openOrder', 'Open the order')
+                : convertedLink.kind === 'orders'
+                  ? t('product_configurator.configurator.goToOrders', 'Go to orders')
+                  : t('product_configurator.configurator.goToQuotes', 'Go to quotes')}
+            </Link>
           </Button>
         )
     }

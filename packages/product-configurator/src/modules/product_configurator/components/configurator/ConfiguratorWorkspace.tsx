@@ -8,6 +8,7 @@ import { Button } from '@open-mercato/ui/primitives/button'
 import { Spinner } from '@open-mercato/ui/primitives/spinner'
 import { formatCurrency } from '@open-mercato/ui/utils/format'
 import type { ConfigurationDefinition } from '../../data/validators'
+import { pluralLabel } from '../studio/pluralLabel'
 import { ConfigurationDetails } from './ConfigurationDetails'
 import type { WorkspaceEvaluation, WorkspaceSelections } from './evaluationSchema'
 import { FeatureField } from './FeatureField'
@@ -85,9 +86,9 @@ export function ConfiguratorWorkspaceView({
     if (!evaluation || pending) return
     const blocking = evaluation.errors.length
     setAnnouncement(
-      t('product_configurator.configurator.live', 'Net price {price}. {count} messages, {blocking} blocking.', {
+      t('product_configurator.configurator.live', 'Net price {price}. {messages}, {blocking} blocking.', {
         price: formatCurrency(evaluation.netPrice, evaluation.currencyCode, locale) ?? evaluation.netPrice,
-        count: messages.length,
+        messages: pluralLabel(t, locale, 'product_configurator.configurator.liveMessages', '{count} messages', messages.length),
         blocking,
       }),
     )
@@ -148,7 +149,7 @@ export function ConfiguratorWorkspaceView({
   const firstInvalid = readOnly ? null : (definition.features.find((feature) => invalidFields.has(feature.key)) ?? null)
 
   return (
-    <div className={cn('grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,24rem)]', renderAction && 'pb-24 lg:pb-0')} data-testid="configurator-workspace">
+    <div className={cn('grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,24rem)]', renderAction && 'pb-24 lg:pb-0')} data-testid="configurator-workspace">
       <fieldset disabled={readOnly} className="min-w-0 space-y-4">
         {groups.map((group) => {
           const groupKey = group.name ?? ''
@@ -194,7 +195,7 @@ export function ConfiguratorWorkspaceView({
           )
         })}
       </fieldset>
-      <div className="space-y-4 lg:sticky lg:top-4 lg:self-start">
+      <div className="min-w-0 space-y-4 lg:sticky lg:top-4 lg:self-start">
         <section className="space-y-2 rounded-lg border border-border bg-card p-4" aria-busy={pending} data-testid="configurator-summary">
           <div className="flex items-start justify-between gap-3">
             <div className={cn(pending && 'opacity-60')}>

@@ -3,6 +3,8 @@ import { build } from '../../../lib/__tests__/fixtures'
 import type { WorkspaceEvaluation } from '../evaluationSchema'
 import {
   changedChoices,
+  convertedOrderLookupUrl,
+  convertedQuoteLinkFromResponse,
   evaluateOutcomeFromResponse,
   finaliseOutcomeFromResponse,
   quoteHref,
@@ -157,5 +159,16 @@ describe('session API mapping', () => {
   it('links back to the quote with the configured line to highlight', () => {
     expect(quoteHref(QUOTE_ID)).toBe(`/backend/sales/quotes/${QUOTE_ID}`)
     expect(quoteHref(QUOTE_ID, 'snap')).toBe(`/backend/sales/quotes/${QUOTE_ID}?configuredLine=snap`)
+  })
+
+  it('links a converted quote to its order, else to the orders list, else (no order access) to the quotes list', () => {
+    expect(convertedOrderLookupUrl(QUOTE_ID)).toBe(`/api/sales/orders?id=${QUOTE_ID}&pageSize=1`)
+    expect(convertedQuoteLinkFromResponse(200, { items: [{ id: QUOTE_ID, orderNumber: 'SO-1' }] }, QUOTE_ID)).toEqual({
+      kind: 'order',
+      href: `/backend/sales/orders/${QUOTE_ID}`,
+    })
+    expect(convertedQuoteLinkFromResponse(200, { items: [] }, QUOTE_ID)).toEqual({ kind: 'orders', href: '/backend/sales/orders' })
+    expect(convertedQuoteLinkFromResponse(403, { error: 'Forbidden' }, QUOTE_ID)).toEqual({ kind: 'quotes', href: '/backend/sales/quotes' })
+    expect(convertedQuoteLinkFromResponse(200, { unexpected: true }, QUOTE_ID)).toEqual({ kind: 'quotes', href: '/backend/sales/quotes' })
   })
 })

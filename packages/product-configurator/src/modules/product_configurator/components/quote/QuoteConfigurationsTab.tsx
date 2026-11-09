@@ -4,6 +4,7 @@ import * as React from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useLocale, useT } from '@open-mercato/shared/lib/i18n/context'
+import { useOrganizationScopeVersion } from '@open-mercato/shared/lib/frontend/useOrganizationScope'
 import { cn } from '@open-mercato/shared/lib/utils'
 import { hasFeature } from '@open-mercato/shared/security/features'
 import { useBackendChrome } from '@open-mercato/ui/backend/BackendChromeProvider'
@@ -26,7 +27,14 @@ import {
   configureHref,
   runGuardedCall,
 } from '../configurator/session/sessionApi'
-import { SNAPSHOTS_API, snapshotHref, snapshotListSchema, type SnapshotReadModel } from '../snapshots/snapshotsApi'
+import {
+  OrganizationRequiredError,
+  SNAPSHOTS_API,
+  isOrganizationRequired,
+  snapshotHref,
+  snapshotListSchema,
+  type SnapshotReadModel,
+} from '../snapshots/snapshotsApi'
 import { ModelPickerDialog } from './ModelPickerDialog'
 import {
   MODELS_VIEW_FEATURE,
@@ -49,7 +57,7 @@ type TabData = {
   candidates: ModelCandidate[] | null
 }
 
-type TabLoad = { status: 'loading' } | { status: 'error' } | { status: 'ready'; data: TabData }
+type TabLoad = { status: 'loading' } | { status: 'error' } | { status: 'organization_required' } | { status: 'ready'; data: TabData }
 
 type QuoteTabMutationContext = { formId: string; resourceKind: string; resourceId: string; retryLastMutation: () => Promise<boolean> }
 
@@ -57,6 +65,7 @@ const JSON_HEADERS = { 'content-type': 'application/json' }
 
 async function readJson(url: string): Promise<unknown> {
   const call = await apiCall<unknown>(url, { cache: 'no-store' })
+  if (isOrganizationRequired(call.status, call.result)) throw new OrganizationRequiredError()
   if (!call.ok) throw new Error(`[internal] ${url} answered ${call.status}`)
   return call.result
 }
@@ -99,6 +108,7 @@ export function QuoteConfigurationsTab({ quoteId, currencyCode }: QuoteConfigura
   const [busy, setBusy] = React.useState(false)
   const [notice, setNotice] = React.useState<string | null>(null)
   const highlightRef = React.useRef<HTMLElement | null>(null)
+  const scopeVersion = useOrganizationScopeVersion()
   const reload = React.useCallback(() => setReloadToken((token) => token + 1), [])
 
   React.useEffect(() => {
@@ -109,14 +119,14 @@ export function QuoteConfigurationsTab({ quoteId, currencyCode }: QuoteConfigura
       (data) => {
         if (!cancelled) setLoad({ status: 'ready', data })
       },
-      () => {
-        if (!cancelled) setLoad({ status: 'error' })
+      (error: unknown) => {
+        if (!cancelled) setLoad({ status: error instanceof OrganizationRequiredError ? 'organization_required' : 'error' })
       },
     )
     return () => {
       cancelled = true
     }
-  }, [canConfigure, canManageSessions, chromeReady, currencyCode, quoteId, reloadToken])
+  }, [canConfigure, canManageSessions, chromeReady, currencyCode, quoteId, reloadToken, scopeVersion])
 
   const highlightedPresent = load.status === 'ready' && load.data.snapshots.some((snapshot) => snapshot.id === highlightId)
   React.useEffect(() => {
@@ -193,6 +203,9 @@ export function QuoteConfigurationsTab({ quoteId, currencyCode }: QuoteConfigura
   }
 
   if (load.status === 'loading') return <LoadingMessage label={t('product_configurator.quoteTab.loading', 'Loading configurations...')} />
+  if (load.status === 'organization_required') {
+    return <ErrorMessage label={t('product_configurator.quoteTab.organizationRequired', 'Select one organization in the top bar to configure a product.')} />
+  }
   if (load.status === 'error') {
     return (
       <ErrorMessage

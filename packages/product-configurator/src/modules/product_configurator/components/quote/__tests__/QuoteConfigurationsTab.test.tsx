@@ -167,7 +167,7 @@ describe('QuoteConfigurationsTab', () => {
     expect(pushMock).toHaveBeenCalledWith('/backend/product_configurator/configure/new-session')
   })
 
-  it('asks for a model when several fit', async () => {
+  it('asks for a model when several fit and starts nothing before one is chosen', async () => {
     respond({ models: { items: [model('m1', 'Pump'), model('m2', 'Pump compact')] } })
     render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" />)
     const configure = await screen.findByTestId('quote-configure-product')
@@ -175,6 +175,12 @@ describe('QuoteConfigurationsTab', () => {
       fireEvent.click(configure)
     })
     const picker = await screen.findByTestId('quote-configure-model-picker')
+    expect(within(picker).getAllByRole('radio').map((radio) => radio.getAttribute('aria-checked'))).toEqual(['false', 'false'])
+    expect(within(picker).getByRole('button', { name: 'Start' }).hasAttribute('disabled')).toBe(true)
+    await act(async () => {
+      fireEvent.keyDown(picker, { key: 'Enter', ctrlKey: true })
+    })
+    expect(apiCallMock.mock.calls.some(([, init]) => (init as { method?: string } | undefined)?.method === 'POST')).toBe(false)
     fireEvent.click(within(picker).getByRole('radio', { name: /Pump compact/ }))
     await act(async () => {
       fireEvent.keyDown(picker, { key: 'Enter', ctrlKey: true })
@@ -305,5 +311,13 @@ describe('QuoteConfigurationsTab', () => {
     render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" />)
     expect((await screen.findByTestId('error-message')).textContent).toContain('Could not load the configurations')
     expect(screen.queryByTestId('empty-state')).toBeNull()
+  })
+
+  it('asks to select one organization, without Retry, while all organizations are selected', async () => {
+    apiCallMock.mockResolvedValue({ ok: false, status: 400, result: { error: 'Select an organization', code: 'organization_scope_required' } })
+    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" />)
+    const message = await screen.findByTestId('error-message')
+    expect(message.textContent).toBe('Select one organization in the top bar to configure a product.')
+    expect(within(message).queryByRole('button')).toBeNull()
   })
 })

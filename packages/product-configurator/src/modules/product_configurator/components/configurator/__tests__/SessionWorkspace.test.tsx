@@ -22,8 +22,10 @@ let guardRefusal: string | null = null
 let grantedFeatures: string[] = ['product_configurator.sessions.manage', 'sales.quotes.view', 'sales.quotes.manage']
 
 jest.mock('@open-mercato/shared/lib/i18n/context', () => ({
-  useT: () => (key: string, fallback?: string, params?: Record<string, string | number>) =>
-    (fallback ?? key).replace(/\{(\w+)\}/g, (token, name: string) => (params && name in params ? String(params[name]) : token)),
+  useT: () => (key: string, fallback?: string | Record<string, string | number>, params?: Record<string, string | number>) =>
+    typeof fallback === 'object'
+      ? key
+      : (fallback ?? key).replace(/\{(\w+)\}/g, (token, name: string) => (params && name in params ? String(params[name]) : token)),
   useLocale: () => 'en',
 }))
 
@@ -270,6 +272,36 @@ describe('SessionWorkspace', () => {
     const panel = screen.getByTestId('configurator-finalise-outcome')
     expect(panel.textContent).toContain(text)
     expect(within(panel).getByText(action)).toBeTruthy()
+  })
+
+  it.each([
+    [{ items: [{ id: QUOTE_ID }] }, 'Open the order', `/backend/sales/orders/${QUOTE_ID}`],
+    [{ items: [] }, 'Go to orders', '/backend/sales/orders'],
+  ])('links a converted quote to its order for a rep who can view orders (%#)', async (orders, label, href) => {
+    grantedFeatures = [...grantedFeatures, 'sales.orders.view']
+    await renderReady()
+    apiCallMock.mockResolvedValueOnce({ ok: false, status: 409, result: { code: 'quote_converted' } })
+    apiCallMock.mockResolvedValueOnce({ ok: true, status: 200, result: orders })
+    await act(async () => {
+      fireEvent.click(addButton())
+    })
+    const panel = screen.getByTestId('configurator-finalise-outcome')
+    await waitFor(() => expect(within(panel).getByText(label).getAttribute('href')).toBe(href))
+    expect(apiCallMock.mock.calls[2][0]).toBe(`/api/sales/orders?id=${QUOTE_ID}&pageSize=1`)
+  })
+
+  it('shows a session discarded in another window as closed: no workspace, no price and no Discard', async () => {
+    await renderReady()
+    apiCallMock.mockResolvedValueOnce({ ok: false, status: 409, result: { code: 'session_not_open', status: 'cancelled' } })
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('configurator-option-seal-viton'))
+    })
+    const closed = screen.getByTestId('configurator-session-closed')
+    expect(within(closed).getByTestId('configurator-finalise-outcome').textContent).toContain('This configuration was discarded in another window. Nothing was added.')
+    expect(within(closed).getByText('Open the quote').getAttribute('href')).toBe(`/backend/sales/quotes/${QUOTE_ID}`)
+    expect(screen.queryByRole('button', { name: 'Discard configuration' })).toBeNull()
+    expect(screen.queryByTestId('configurator-net-price')).toBeNull()
+    expect(screen.queryByTestId('configurator-workspace')).toBeNull()
   })
 
   it('offers Try again after a failed line write and keeps the choices', async () => {

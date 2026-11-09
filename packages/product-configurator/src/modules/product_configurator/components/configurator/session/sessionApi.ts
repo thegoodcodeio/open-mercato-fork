@@ -20,6 +20,7 @@ export const CANCEL_API = `${SESSIONS_API}/cancel`
 export const FINALISE_API = `${SESSIONS_API}/finalise`
 export const SESSION_RESOURCE_KIND = 'product_configurator.session'
 export const FINALISE_FEATURE = 'sales.quotes.manage'
+export const ORDERS_VIEW_FEATURE = 'sales.orders.view'
 
 export function configureHref(sessionId: string): string {
   return `/backend/product_configurator/configure/${encodeURIComponent(sessionId)}`
@@ -34,6 +35,28 @@ export function quoteHref(quoteId: string, highlightSnapshotId?: string): string
 }
 
 export const QUOTES_LIST_HREF = '/backend/sales/quotes'
+export const ORDERS_LIST_HREF = '/backend/sales/orders'
+
+export function orderHref(orderId: string): string {
+  return `${ORDERS_LIST_HREF}/${encodeURIComponent(orderId)}`
+}
+
+/** Sales gives the order of a converted quote the quote id unless the caller chose another one. */
+export function convertedOrderLookupUrl(quoteId: string): string {
+  return `/api/sales/orders?id=${encodeURIComponent(quoteId)}&pageSize=1`
+}
+
+export type ConvertedQuoteLink = { kind: 'order'; href: string } | { kind: 'orders'; href: string } | { kind: 'quotes'; href: string }
+
+const orderListSchema = z.object({ items: z.array(z.object({ id: z.string() }).passthrough()) })
+
+/** The order of a converted quote when it is readable, else the orders list, else (no order access) the quotes list. */
+export function convertedQuoteLinkFromResponse(status: number, payload: unknown, quoteId: string): ConvertedQuoteLink {
+  const list = status === 200 ? orderListSchema.safeParse(payload) : null
+  if (!list?.success) return { kind: 'quotes', href: QUOTES_LIST_HREF }
+  if (list.data.items.some((item) => item.id === quoteId)) return { kind: 'order', href: orderHref(quoteId) }
+  return { kind: 'orders', href: ORDERS_LIST_HREF }
+}
 
 /** A write that an injected mutation guard refused before it was sent; `message` is the guard's own text. */
 export class MutationBlockedError extends Error {}

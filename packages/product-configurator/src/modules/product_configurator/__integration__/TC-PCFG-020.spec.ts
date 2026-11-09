@@ -101,7 +101,7 @@ test.describe('TC-PCFG-020: open a session and evaluate golden scenarios priced 
       expect(await readJsonSafe(fresh)).toMatchObject({ status: 'open', mode: 'new', revision: 0, quoteId, selections: {}, evaluation: null })
 
       const defaults = await evaluateOk(request, token, { id: sessionId, revision: 0, selections: {} })
-      expect(defaults.revision).toBe(1)
+      expect(defaults.revision, 'evaluating the stored (empty) choices is no change').toBe(0)
       expect(defaults.evaluation.bom.map((line) => [line.bomId, line.sku, line.quantity, line.unitPrice, line.total])).toEqual([
         ['frame', frameSku, '1', '80', '80.00'],
         ['panel', blueSku, '2', '45.5', '91.00'],
@@ -114,15 +114,15 @@ test.describe('TC-PCFG-020: open a session and evaluate golden scenarios priced 
       expect(defaults.evaluation.priceContext).toMatchObject({ customerId, channelId: null })
       expect(defaults.evaluation.priceContext.customerGroupIds).toContain(groupId)
 
-      const long = await evaluateOk(request, token, { id: sessionId, revision: 1, selections: { length: 12 } })
-      expect(long.revision).toBe(2)
+      const long = await evaluateOk(request, token, { id: sessionId, revision: 0, selections: { length: 12 } })
+      expect(long.revision).toBe(1)
       expect(long.evaluation.bom[2]).toMatchObject({ quantity: '12', unitPrice: '9', total: '108.00' })
       expect(long.evaluation.netPrice).toBe('279.00')
       expect(long.evaluation.hash).not.toBe(defaults.evaluation.hash)
 
       const stored = await readSession(request, token, `id=${sessionId}`)
       expect(await readJsonSafe(stored)).toMatchObject({
-        revision: 2,
+        revision: 1,
         selections: { length: 12 },
         evaluation: { netPrice: '279.00', hash: long.evaluation.hash },
         modelVersion: { id: model.modelVersionId, modelId: model.modelId, modelTitle: `QA PCFG 020 ${suffix}` },

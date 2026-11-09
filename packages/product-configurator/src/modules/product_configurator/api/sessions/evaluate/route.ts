@@ -63,7 +63,7 @@ export const openApi: OpenApiRouteDoc = {
     POST: {
       summary: 'Evaluate choices and store them on the session',
       description:
-        'Evaluates the choices against the session model version, prices the BOM from the catalog for the quote channel and customer (with the customer groups at the evaluation time), stores the choices and the result and returns them with the next `revision`. Send the `revision` last seen; a stale one answers 409 `session_changed` with the current session state. Blocking rule and system errors (`option_not_available`, `no_permitted_values`, `bom_sku_unmapped`, `bom_negative_quantity`) are part of a 200 result with `finalisable: false`. The request body is limited to 64 KB.',
+        'Evaluates the choices against the session model version, prices the BOM from the catalog for the quote channel and customer (with the customer groups at the evaluation time), stores the choices and the result and returns them with the `revision`, which moves on only when the choices differ from the stored ones (re-evaluating the stored choices keeps it). Send the `revision` last seen; a stale one answers 409 `session_changed` with the current session state. Blocking rule and system errors (`option_not_available`, `no_permitted_values`, `bom_sku_unmapped`, `bom_negative_quantity`) are part of a 200 result with `finalisable: false`. The request body is limited to 64 KB.',
       requestBody: { contentType: 'application/json', schema: sessionEvaluateSchema },
       responses: [{ status: 200, description: 'Stored evaluation', schema: sessionStateSchema.extend({ evaluation: evaluationSchema }) }],
       errors: [

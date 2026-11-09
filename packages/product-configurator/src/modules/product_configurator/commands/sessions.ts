@@ -214,6 +214,12 @@ function intentOf(selections: RawSelections): Record<string, unknown> {
   return Object.fromEntries(Object.entries(selections).filter(([, value]) => value !== null))
 }
 
+/** The revision counts changes of the intent, so re-evaluating the stored choices (opening a session) never makes another window stale. */
+function sameIntent(stored: Record<string, unknown>, next: Record<string, unknown>): boolean {
+  const keys = Object.keys(next)
+  return keys.length === Object.keys(stored).length && keys.every((key) => Object.is(stored[key], next[key]))
+}
+
 /**
  * Prices `selections` on `version` for the quote's channel and customer. A version whose currency no
  * longer matches the quote answers 409 `currency_mismatch`; typed evaluation failures answer 422.
@@ -285,9 +291,9 @@ const evaluateSessionCommand: CommandHandler<SessionEvaluateInput, SessionEvalua
       if (!locked) throw await sessionNotFound()
       if (locked.status !== 'open') throw await sessionNotOpen(locked.status)
       if (locked.revision !== input.revision) throw await sessionChanged(locked)
+      if (!sameIntent(locked.selections, selections)) locked.revision = input.revision + 1
       locked.selections = selections
       locked.evaluation = evaluation
-      locked.revision = input.revision + 1
       await trx.flush()
       return locked
     })

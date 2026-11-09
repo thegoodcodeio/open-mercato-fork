@@ -13,8 +13,10 @@ const pushMock = jest.fn()
 const flashMock = jest.fn()
 
 jest.mock('@open-mercato/shared/lib/i18n/context', () => ({
-  useT: () => (key: string, fallback?: string, params?: Record<string, string | number>) =>
-    (fallback ?? key).replace(/\{(\w+)\}/g, (token, name: string) => (params && name in params ? String(params[name]) : token)),
+  useT: () => (key: string, fallback?: string | Record<string, string | number>, params?: Record<string, string | number>) =>
+    typeof fallback === 'object'
+      ? key
+      : (fallback ?? key).replace(/\{(\w+)\}/g, (token, name: string) => (params && name in params ? String(params[name]) : token)),
   useLocale: () => 'en',
 }))
 

@@ -16,14 +16,14 @@ type ModelPickerDialogProps = {
   onStart: (modelId: string) => void
 }
 
-/** Shown only when several models fit the quote. Escape cancels, Cmd/Ctrl+Enter starts. */
+/** Shown only when several models fit the quote. Nothing is preselected, so Start and Cmd/Ctrl+Enter wait for a choice; Escape cancels. */
 export function ModelPickerDialog({ open, candidates, currencyCode, busy, onCancel, onStart }: ModelPickerDialogProps) {
   const t = useT()
   const [selected, setSelected] = React.useState<string>('')
   const radioId = React.useId()
 
   React.useEffect(() => {
-    if (open) setSelected(candidates[0]?.id ?? '')
+    if (open) setSelected('')
   }, [open, candidates])
 
   const start = () => {

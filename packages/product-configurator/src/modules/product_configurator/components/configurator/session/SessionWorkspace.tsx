@@ -18,7 +18,10 @@ const TERMINAL_OUTCOMES: ReadonlyArray<PanelOutcome['kind']> = ['quote_converted
 /** Terminal outcomes after which nothing is left to discard. */
 const NOTHING_TO_DISCARD: ReadonlyArray<PanelOutcome['kind']> = ['quote_converted', 'added_with_earlier_choices']
 
-/** The configurator on an open session: header, live workspace, "Add to quote" and its outcomes. */
+/**
+ * The configurator on an open session: header, live workspace, "Add to quote" and its outcomes. A session that
+ * another window added or discarded leaves only the header and the explanation, like a reloaded closed session.
+ */
 export function SessionWorkspace({ session, onSessionMoved }: { session: SessionDetail; onSessionMoved: () => void }) {
   const t = useT()
   const { payload: chrome, isReady: chromeReady } = useBackendChrome()
@@ -40,6 +43,15 @@ export function SessionWorkspace({ session, onSessionMoved }: { session: Session
     if (action === 'dismiss') return workspace.dismissOutcome()
     if (action === 'discard') return void workspace.discard()
     addToQuote(ready)
+  }
+
+  if (shownOutcome?.kind === 'session_not_open') {
+    return (
+      <div className="space-y-4" data-testid="configurator-session-closed">
+        <SessionHeader session={session} />
+        <FinaliseOutcomePanel outcome={shownOutcome} definition={definition} priceChange={null} quoteId={session.quoteId} addDisabled onAction={() => undefined} />
+      </div>
+    )
   }
 
   const renderAction = ({ ready, placement }: WorkspaceActionState) => (

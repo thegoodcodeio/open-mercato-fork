@@ -94,24 +94,20 @@ test.describe('TC-PCFG-018: deterministic errors, keyboard and live region of th
       const live = page.getByTestId('configurator-workspace').locator('[aria-live="polite"]')
       await expect(live).toHaveText('Net price €100.00. 0 messages, 0 blocking.', { timeout: 30_000 })
 
-      // Radix roving focus moves focus in a timeout and checks the item only while the arrow key is still down,
-      // so the key is held like a real key press instead of an instant press().
       await page.getByTestId('configurator-option-size-s').focus()
-      await page.keyboard.down('ArrowRight')
+      await page.keyboard.press('ArrowRight')
       await expect(page.getByTestId('configurator-option-size-l')).toHaveAttribute('aria-checked', 'true')
-      await page.keyboard.up('ArrowRight')
       await expect(page.getByTestId('configurator-option-size-l')).toBeFocused()
-      await expect(live).toHaveText('Net price €125.00. 1 messages, 0 blocking.', { timeout: 30_000 })
+      await expect(live).toHaveText('Net price €125.00. 1 message, 0 blocking.', { timeout: 30_000 })
 
-      await page.keyboard.down('ArrowLeft')
+      await page.keyboard.press('ArrowLeft')
       await expect(page.getByTestId('configurator-option-size-s')).toHaveAttribute('aria-checked', 'true')
-      await page.keyboard.up('ArrowLeft')
       await expect(live).toHaveText('Net price €100.00. 0 messages, 0 blocking.', { timeout: 30_000 })
 
       const length = page.getByTestId('configurator-feature-length').getByRole('textbox')
       await length.fill('9')
       await length.press('Enter')
-      await expect(live).toHaveText('Net price €100.00. 1 messages, 1 blocking.', { timeout: 30_000 })
+      await expect(live).toHaveText('Net price €100.00. 1 message, 1 blocking.', { timeout: 30_000 })
       await page.getByTestId('configurator-option-size-s').focus()
       await page.getByTestId('configurator-messages').getByRole('button', { name: 'Go to Length' }).click()
       await expect(length).toBeFocused()
