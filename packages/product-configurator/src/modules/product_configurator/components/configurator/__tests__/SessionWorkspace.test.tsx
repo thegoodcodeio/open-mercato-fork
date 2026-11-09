@@ -287,7 +287,37 @@ describe('SessionWorkspace', () => {
     })
     const panel = screen.getByTestId('configurator-finalise-outcome')
     await waitFor(() => expect(within(panel).getByText(label).getAttribute('href')).toBe(href))
-    expect(apiCallMock.mock.calls[2][0]).toBe(`/api/sales/orders?id=${QUOTE_ID}&pageSize=1`)
+    expect(apiCallMock.mock.calls[2]).toEqual([
+      `/api/sales/orders?id=${QUOTE_ID}&pageSize=1`,
+      expect.objectContaining({ headers: { 'x-om-forbidden-redirect': '0' } }),
+    ])
+  })
+
+  it('sends a rep without order access from a converted quote to the quotes list without an orders request', async () => {
+    await renderReady()
+    apiCallMock.mockResolvedValueOnce({ ok: false, status: 409, result: { code: 'quote_converted' } })
+    await act(async () => {
+      fireEvent.click(addButton())
+    })
+    const panel = screen.getByTestId('configurator-finalise-outcome')
+    expect(within(panel).getByText('Go to quotes').getAttribute('href')).toBe('/backend/sales/quotes')
+    expect(apiCallMock).toHaveBeenCalledTimes(2)
+    expect(apiCallMock.mock.calls.some(([url]) => String(url).startsWith('/api/sales/orders'))).toBe(false)
+  })
+
+  it.each([
+    ['finalise', { code: 'session_not_open', status: 'finalising' }],
+    ['finalise', { code: 'session_not_open' }],
+    ['evaluate', { code: 'session_not_open', status: 'finalising' }],
+  ] as const)('reloads a session another window is still adding instead of showing it closed (%s %j)', async (source, body) => {
+    await renderReady()
+    apiCallMock.mockResolvedValueOnce({ ok: false, status: 409, result: body })
+    await act(async () => {
+      fireEvent.click(source === 'finalise' ? addButton() : screen.getByTestId('configurator-option-seal-viton'))
+    })
+    expect(sessionMovedMock).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('configurator-session-closed')).toBeNull()
+    expect(screen.queryByTestId('configurator-finalise-outcome')).toBeNull()
   })
 
   it('shows a session discarded in another window as closed: no workspace, no price and no Discard', async () => {

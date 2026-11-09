@@ -163,7 +163,7 @@ function useConvertedQuoteLink(quoteId: string, converted: boolean): ConvertedQu
   React.useEffect(() => {
     if (!converted || !canViewOrders) return
     let cancelled = false
-    void apiCall<unknown>(convertedOrderLookupUrl(quoteId), { cache: 'no-store' }).then(
+    void apiCall<unknown>(convertedOrderLookupUrl(quoteId), { cache: 'no-store', headers: { 'x-om-forbidden-redirect': '0' } }).then(
       (call) => {
         if (!cancelled) setLink(convertedQuoteLinkFromResponse(call.status, call.result, quoteId))
       },

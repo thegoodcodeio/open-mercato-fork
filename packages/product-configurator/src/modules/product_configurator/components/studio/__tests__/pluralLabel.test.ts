@@ -1,5 +1,6 @@
 import type { TranslateFn } from '@open-mercato/shared/lib/i18n/context'
 import en from '../../../i18n/en.json'
+import es from '../../../i18n/es.json'
 import pl from '../../../i18n/pl.json'
 import { pluralLabel, problemCountLabel } from '../pluralLabel'
 
@@ -46,5 +47,15 @@ describe('configurator plural labels', () => {
   ])('reads the BOM title and the live message count in their plural form (%#)', (t, locale, count, bomTitle, messages) => {
     expect(pluralLabel(t, locale, 'product_configurator.configurator.bom.titleCount', 'Bill of materials ({count} lines)', count)).toBe(bomTitle)
     expect(pluralLabel(t, locale, 'product_configurator.configurator.liveMessages', '{count} messages', count)).toBe(messages)
+  })
+
+  it.each([
+    ['es', es, 1, '1 bloqueante'],
+    ['es', es, 2, '2 bloqueantes'],
+    ['pl', pl, 1, '1 blokujący'],
+    ['pl', pl, 3, '3 blokujące'],
+    ['pl', pl, 5, '5 blokujących'],
+  ] as const)('reads the blocking count of the live message in its %s plural form for %i', (locale, dict, count, expected) => {
+    expect(pluralLabel(translator(dict), locale, 'product_configurator.configurator.liveBlocking', '{count} blocking', count)).toBe(expected)
   })
 })

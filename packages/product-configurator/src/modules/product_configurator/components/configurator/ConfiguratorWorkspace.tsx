@@ -84,12 +84,11 @@ export function ConfiguratorWorkspaceView({
 
   React.useEffect(() => {
     if (!evaluation || pending) return
-    const blocking = evaluation.errors.length
     setAnnouncement(
-      t('product_configurator.configurator.live', 'Net price {price}. {messages}, {blocking} blocking.', {
+      t('product_configurator.configurator.live', 'Net price {price}. {messages}, {blocking}.', {
         price: formatCurrency(evaluation.netPrice, evaluation.currencyCode, locale) ?? evaluation.netPrice,
         messages: pluralLabel(t, locale, 'product_configurator.configurator.liveMessages', '{count} messages', messages.length),
-        blocking,
+        blocking: pluralLabel(t, locale, 'product_configurator.configurator.liveBlocking', '{count} blocking', evaluation.errors.length),
       }),
     )
   }, [evaluation, pending, messages.length, locale, t])

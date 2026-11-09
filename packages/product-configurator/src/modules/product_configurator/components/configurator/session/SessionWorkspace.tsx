@@ -4,6 +4,7 @@ import * as React from 'react'
 import { useT } from '@open-mercato/shared/lib/i18n/context'
 import { hasFeature } from '@open-mercato/shared/security/features'
 import { useBackendChrome } from '@open-mercato/ui/backend/BackendChromeProvider'
+import { LoadingMessage } from '@open-mercato/ui/backend/detail'
 import { Button } from '@open-mercato/ui/primitives/button'
 import { Spinner } from '@open-mercato/ui/primitives/spinner'
 import { ConfiguratorWorkspaceView, type WorkspaceActionState } from '../ConfiguratorWorkspace'
@@ -11,6 +12,7 @@ import { FinaliseOutcomePanel, type OutcomeAction } from './FinaliseOutcomePanel
 import { SessionChangedPanel } from './SessionChangedPanel'
 import { SessionHeader } from './SessionHeader'
 import { FINALISE_FEATURE, type PanelOutcome, type SessionDetail } from './sessionApi'
+import type { SessionStatus } from '../evaluationSchema'
 import { useSessionWorkspace } from './useSessionWorkspace'
 
 const TERMINAL_OUTCOMES: ReadonlyArray<PanelOutcome['kind']> = ['quote_converted', 'cannot_add', 'session_not_open', 'added_with_earlier_choices']
@@ -18,9 +20,13 @@ const TERMINAL_OUTCOMES: ReadonlyArray<PanelOutcome['kind']> = ['quote_converted
 /** Terminal outcomes after which nothing is left to discard. */
 const NOTHING_TO_DISCARD: ReadonlyArray<PanelOutcome['kind']> = ['quote_converted', 'added_with_earlier_choices']
 
+/** Statuses a session never leaves; any other `session_not_open` status can still reopen, so the page reloads it. */
+const CLOSED_STATUSES: ReadonlyArray<SessionStatus | null> = ['finalised', 'cancelled']
+
 /**
  * The configurator on an open session: header, live workspace, "Add to quote" and its outcomes. A session that
- * another window added or discarded leaves only the header and the explanation, like a reloaded closed session.
+ * another window added or discarded leaves only the header and the explanation, like a reloaded closed session;
+ * one another window is still adding is reloaded, because that add can fail and reopen it.
  */
 export function SessionWorkspace({ session, onSessionMoved }: { session: SessionDetail; onSessionMoved: () => void }) {
   const t = useT()
@@ -32,6 +38,8 @@ export function SessionWorkspace({ session, onSessionMoved }: { session: Session
   const shownOutcome: PanelOutcome | null =
     outcome ?? (state.failure?.kind === 'session_not_open' ? { kind: 'session_not_open', status: state.failure.status } : null)
   const terminal = shownOutcome !== null && TERMINAL_OUTCOMES.includes(shownOutcome.kind)
+  const notOpenStatus = shownOutcome?.kind === 'session_not_open' ? shownOutcome.status : undefined
+  const movedElsewhere = notOpenStatus !== undefined && !CLOSED_STATUSES.includes(notOpenStatus)
   const readOnly = finalising || added || terminal
   const canAdd = (ready: boolean) => ready && !missingEditRights && conflict === null && !readOnly
 
@@ -44,6 +52,12 @@ export function SessionWorkspace({ session, onSessionMoved }: { session: Session
     if (action === 'discard') return void workspace.discard()
     addToQuote(ready)
   }
+
+  React.useEffect(() => {
+    if (movedElsewhere) onSessionMoved()
+  }, [movedElsewhere, onSessionMoved])
+
+  if (movedElsewhere) return <LoadingMessage label={t('product_configurator.configurator.session.loading', 'Loading the configuration...')} />
 
   if (shownOutcome?.kind === 'session_not_open') {
     return (

@@ -99,6 +99,18 @@ describe('FeatureField choice radio group', () => {
     expect(option('m').getAttribute('aria-checked')).toBe('false')
   })
 
+  it('describes the radio group with the reason of the options arrow keys skip', () => {
+    const { rerender } = render(<Harness initial="s" allowedValues={['xs', 's', 'l']} onChange={() => undefined} />)
+    const group = screen.getByRole('radiogroup')
+    const reasonId = group.getAttribute('aria-describedby')
+    expect(reasonId).toBeTruthy()
+    expect(document.getElementById(reasonId ?? '')?.textContent).toBe('Medium: Not available with the current choices.')
+    expect(option('m').getAttribute('aria-describedby')).toBe(reasonId)
+
+    rerender(<Harness initial="s" allowedValues={null} onChange={() => undefined} />)
+    expect(screen.getByRole('radiogroup').hasAttribute('aria-describedby')).toBe(false)
+  })
+
   it('leaves other keys to the radio group', () => {
     const onChange = jest.fn()
     render(<Harness initial="xs" allowedValues={null} onChange={onChange} />)

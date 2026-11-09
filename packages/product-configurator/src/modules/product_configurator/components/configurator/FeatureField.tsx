@@ -57,6 +57,7 @@ export function FeatureField({ definition, feature, value, allowedValues, forced
 
   const renderRadios = (options: FeatureOption[], swatches: boolean) => {
     const blocked = options.filter((option) => optionState(option).blocked && !forcedBy)
+    const groupDescribedBy = [describedBy, blocked.length > 0 ? reasonId : null].filter(Boolean).join(' ') || undefined
     const choose = (option: FeatureOption) => {
       if (optionState(option).blocked || option.value === chosenRef.current) return
       chosenRef.current = option.value
@@ -82,7 +83,7 @@ export function FeatureField({ definition, feature, value, allowedValues, forced
           id={id}
           value={current}
           aria-labelledby={labelId}
-          aria-describedby={describedBy}
+          aria-describedby={groupDescribedBy}
           aria-invalid={invalid}
           className="h-auto flex-wrap"
           onValueChange={(next) => {

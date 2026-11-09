@@ -1,9 +1,8 @@
 import { z } from 'zod'
-import { ORGANIZATION_SCOPE_REQUIRED_ERROR_CODE } from '@open-mercato/shared/lib/auth/organizationScope'
 import { definitionSchema, type ConfigurationDefinition } from '../../../data/validators'
+import { isOrganizationRequired } from '../../snapshots/snapshotsApi'
 import {
   SESSION_STATUSES,
-  evaluationErrorBodySchema,
   failureFromResponse,
   sessionStateSchema,
   workspaceEvaluationSchema,
@@ -113,9 +112,7 @@ export type SessionLoad =
 export function sessionLoadFromResponse(status: number, payload: unknown): SessionLoad {
   if (status === 404) return { status: 'not_found' }
   if (status === 403) return { status: 'forbidden' }
-  if (status === 400 && evaluationErrorBodySchema.safeParse(payload).data?.code === ORGANIZATION_SCOPE_REQUIRED_ERROR_CODE) {
-    return { status: 'organization_required' }
-  }
+  if (isOrganizationRequired(status, payload)) return { status: 'organization_required' }
   if (status !== 200) return { status: 'error' }
   const parsed = sessionDetailSchema.safeParse(payload)
   if (!parsed.success) return { status: 'error' }

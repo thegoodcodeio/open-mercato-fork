@@ -1,8 +1,8 @@
 import { z } from 'zod'
-import { ORGANIZATION_SCOPE_REQUIRED_ERROR_CODE } from '@open-mercato/shared/lib/auth/organizationScope'
 import { MODELS_API_URL } from '../models/modelsApi'
 import { SESSION_STATUSES } from '../configurator/evaluationSchema'
 import { SESSIONS_API } from '../configurator/session/sessionApi'
+import { isOrganizationRequired } from '../snapshots/snapshotsApi'
 
 export const SESSIONS_MANAGE_FEATURE = 'product_configurator.sessions.manage'
 export const MODELS_VIEW_FEATURE = 'product_configurator.models.view'
@@ -71,7 +71,7 @@ export function openOutcomeFromResponse(status: number, payload: unknown): OpenO
   const body = parsed.success ? parsed.data : {}
   if (status === 201 && body.sessionId) return { kind: 'opened', sessionId: body.sessionId }
   if (status === 403) return { kind: 'forbidden' }
-  if (status === 400 && body.code === ORGANIZATION_SCOPE_REQUIRED_ERROR_CODE) return { kind: 'organization_required' }
+  if (isOrganizationRequired(status, payload)) return { kind: 'organization_required' }
   if (body.code === 'model_required') return { kind: 'model_required' }
   if (body.code === 'no_published_version' || body.code === 'currency_mismatch' || body.code === 'model_not_found') return { kind: 'not_offered' }
   return { kind: 'error', message: body.error ?? null }
