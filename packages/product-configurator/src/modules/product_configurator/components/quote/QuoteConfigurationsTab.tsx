@@ -7,6 +7,7 @@ import { useLocale, useT } from '@open-mercato/shared/lib/i18n/context'
 import { useOrganizationScopeVersion } from '@open-mercato/shared/lib/frontend/useOrganizationScope'
 import { cn } from '@open-mercato/shared/lib/utils'
 import { hasFeature } from '@open-mercato/shared/security/features'
+import { emitSalesDocumentTotalsRefresh } from '@open-mercato/core/modules/sales/lib/frontend/documentTotalsEvents'
 import { useBackendChrome } from '@open-mercato/ui/backend/BackendChromeProvider'
 import { useConfirmDialog } from '@open-mercato/ui/backend/confirm-dialog'
 import { ErrorMessage, LoadingMessage, TabEmptyState } from '@open-mercato/ui/backend/detail'
@@ -35,9 +36,12 @@ import {
   snapshotListSchema,
   type SnapshotReadModel,
 } from '../snapshots/snapshotsApi'
+import { LineDetailsDialog } from './LineDetailsDialog'
+import { TAX_RATES_FEATURE } from './lineDetailsApi'
 import { ModelPickerDialog } from './ModelPickerDialog'
 import {
   MODELS_VIEW_FEATURE,
+  QUOTES_MANAGE_FEATURE,
   SESSIONS_MANAGE_FEATURE,
   candidatesUrl,
   openOutcomeFromResponse,
@@ -83,10 +87,18 @@ async function loadTab(quoteId: string, currencyCode: string, access: { sessions
   return { snapshots: snapshots.data.items, snapshotsTruncated: snapshots.data.truncated === true, sessions, candidates }
 }
 
-type QuoteConfigurationsTabProps = { quoteId: string; currencyCode: string }
+type QuoteConfigurationsTabProps = {
+  quoteId: string
+  currencyCode: string
+  /** Quote `updatedAt` from the sales page, the lock token of "Edit line details". */
+  quoteUpdatedAt: string | null
+}
 
-/** Quote tab "Configurations": start a configuration, continue or discard one in progress, and see the configured lines. */
-export function QuoteConfigurationsTab({ quoteId, currencyCode }: QuoteConfigurationsTabProps) {
+/**
+ * Quote tab "Configurations": start a configuration, continue or discard one in progress, and work with the
+ * configured lines (details, edit line details, add another identical, configure again a removed line).
+ */
+export function QuoteConfigurationsTab({ quoteId, currencyCode, quoteUpdatedAt }: QuoteConfigurationsTabProps) {
   const t = useT()
   const locale = useLocale()
   const router = useRouter()
@@ -96,6 +108,7 @@ export function QuoteConfigurationsTab({ quoteId, currencyCode }: QuoteConfigura
   const canManageSessions = hasFeature(chrome?.grantedFeatures, SESSIONS_MANAGE_FEATURE)
   const canOpenModels = hasFeature(chrome?.grantedFeatures, MODELS_VIEW_FEATURE)
   const canConfigure = canManageSessions && canOpenModels
+  const canChangeLines = canManageSessions && hasFeature(chrome?.grantedFeatures, QUOTES_MANAGE_FEATURE)
   const { confirm, ConfirmDialogElement } = useConfirmDialog()
   const contextId = `product_configurator.quote-tab:${quoteId}`
   const { runMutation, retryLastMutation } = useGuardedMutation<QuoteTabMutationContext>({
@@ -107,9 +120,20 @@ export function QuoteConfigurationsTab({ quoteId, currencyCode }: QuoteConfigura
   const [pickerOpen, setPickerOpen] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
   const [notice, setNotice] = React.useState<string | null>(null)
+  const [editing, setEditing] = React.useState<{ lineId: string } | null>(null)
+  const [lockToken, setLockToken] = React.useState(quoteUpdatedAt)
   const highlightRef = React.useRef<HTMLElement | null>(null)
   const scopeVersion = useOrganizationScopeVersion()
   const reload = React.useCallback(() => setReloadToken((token) => token + 1), [])
+
+  React.useEffect(() => {
+    setLockToken(quoteUpdatedAt)
+  }, [quoteUpdatedAt])
+
+  const refreshQuote = React.useCallback(() => {
+    emitSalesDocumentTotalsRefresh({ documentId: quoteId, kind: 'quote' })
+    reload()
+  }, [quoteId, reload])
 
   React.useEffect(() => {
     if (!chromeReady) return
@@ -149,11 +173,13 @@ export function QuoteConfigurationsTab({ quoteId, currencyCode }: QuoteConfigura
   const failureFlash = (error: unknown, fallback: string) =>
     flash(error instanceof MutationBlockedError && error.message ? error.message : fallback, 'error')
 
-  const openSession = async (modelId: string) => {
+  /** Opens a new configuration (`modelId`) or a re-priced copy of a configured line (`fromSnapshotId`). */
+  const openSession = async (source: { modelId: string } | { fromSnapshotId: string }) => {
+    const copy = 'fromSnapshotId' in source
     setBusy(true)
     setNotice(null)
     try {
-      const response = await post(SESSIONS_API, { quoteId, modelId }, quoteId)
+      const response = await post(SESSIONS_API, { quoteId, ...source }, quoteId)
       const outcome = openOutcomeFromResponse(response.status, response.result)
       if (outcome.kind === 'opened') {
         router.push(configureHref(outcome.sessionId))
@@ -162,10 +188,15 @@ export function QuoteConfigurationsTab({ quoteId, currencyCode }: QuoteConfigura
       setPickerOpen(false)
       if (outcome.kind === 'not_offered' || outcome.kind === 'model_required') {
         setNotice(
-          t(
-            'product_configurator.quoteTab.notOffered',
-            'This model is no longer offered for this quote: it has no published version or uses another currency. The list of models was reloaded.',
-          ),
+          copy
+            ? t(
+                'product_configurator.quoteTab.copyNotOffered',
+                'This configuration cannot be copied: its model was deleted, has no published version or uses another currency than the quote.',
+              )
+            : t(
+                'product_configurator.quoteTab.notOffered',
+                'This model is no longer offered for this quote: it has no published version or uses another currency. The list of models was reloaded.',
+              ),
         )
         reload()
         return
@@ -223,9 +254,15 @@ export function QuoteConfigurationsTab({ quoteId, currencyCode }: QuoteConfigura
   const nothingFits = candidates?.length === 0
   const [adminsBefore, adminsAfter = ''] = t('product_configurator.quoteTab.adminsPublishHint', 'Admins can publish one: {link}').split('{link}')
   const dateTime = (value: string) => new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
+  const sessionTitle = (session: SessionListItem) => {
+    const title = session.modelVersion.modelTitle ?? t('product_configurator.configurator.header.untitled', 'Product configuration')
+    if (!session.sourceSnapshotId) return title
+    const source = snapshots.find((snapshot) => snapshot.id === session.sourceSnapshotId)
+    return t('product_configurator.configurator.header.copyOf', 'Copy of: {name}', { name: source?.lineName ?? source?.modelTitle ?? title })
+  }
   const configure = () => {
     if (!candidates?.length) return
-    if (candidates.length === 1) void openSession(candidates[0].id)
+    if (candidates.length === 1) void openSession({ modelId: candidates[0].id })
     else setPickerOpen(true)
   }
 
@@ -267,57 +304,97 @@ export function QuoteConfigurationsTab({ quoteId, currencyCode }: QuoteConfigura
             />
           )
         ) : (
-          <ul className="space-y-3">
-            {snapshots.map((snapshot) => {
-              const highlighted = snapshot.id === highlightId
-              return (
-                <li
-                  key={snapshot.id}
-                  ref={highlighted ? (element) => { highlightRef.current = element } : undefined}
-                  tabIndex={highlighted ? -1 : undefined}
-                  className={cn('rounded-lg border border-border bg-card p-4 outline-none', highlighted && 'shadow-focus')}
-                  data-testid={`quote-configured-line-${snapshot.id}`}
-                  data-highlighted={highlighted ? 'true' : undefined}
-                >
-                  <div className="flex flex-wrap items-start justify-between gap-4">
-                    <div className="min-w-0 space-y-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="font-medium">{snapshot.lineName ?? snapshot.modelTitle}</p>
-                        {snapshot.lineState === 'removed' ? (
-                          <StatusBadge variant="warning" dot>
-                            {t('product_configurator.snapshot.lineRemoved', 'Line removed')}
-                          </StatusBadge>
-                        ) : (
-                          <StatusBadge variant={highlighted ? 'info' : 'success'} dot>
-                            {highlighted ? t('product_configurator.quoteTab.new', 'New') : t('product_configurator.snapshot.onQuote', 'On quote')}
-                          </StatusBadge>
-                        )}
+          <>
+            {canChangeLines && snapshots.some((snapshot) => snapshot.lineState === 'present') ? (
+              <p className="text-sm text-muted-foreground" data-testid="quote-configurations-change-hint">
+                {t(
+                  'product_configurator.quoteTab.changeHint',
+                  'To change a configured product, add a changed copy with Add another identical, re-enter the name (if renamed), comment, discount and a changed tax rate in Edit line details, then remove the old line in Items before sending or converting the quote.',
+                )}
+              </p>
+            ) : null}
+            <ul className="space-y-3">
+              {snapshots.map((snapshot) => {
+                const highlighted = snapshot.id === highlightId
+                return (
+                  <li
+                    key={snapshot.id}
+                    ref={highlighted ? (element) => { highlightRef.current = element } : undefined}
+                    tabIndex={highlighted ? -1 : undefined}
+                    className={cn('rounded-lg border border-border bg-card p-4 outline-none', highlighted && 'shadow-focus')}
+                    data-testid={`quote-configured-line-${snapshot.id}`}
+                    data-highlighted={highlighted ? 'true' : undefined}
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div className="min-w-0 space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-medium">{snapshot.lineName ?? snapshot.modelTitle}</p>
+                          {snapshot.lineState === 'removed' ? (
+                            <StatusBadge variant="warning" dot>
+                              {t('product_configurator.snapshot.lineRemoved', 'Line removed')}
+                            </StatusBadge>
+                          ) : (
+                            <StatusBadge variant={highlighted ? 'info' : 'success'} dot>
+                              {highlighted ? t('product_configurator.quoteTab.new', 'New') : t('product_configurator.snapshot.onQuote', 'On quote')}
+                            </StatusBadge>
+                          )}
+                        </div>
+                        <p className="text-sm text-muted-foreground">{snapshot.summary}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {[
+                            snapshot.modelVersion.version !== null ? t('product_configurator.quoteTab.version', 'v{version}', { version: snapshot.modelVersion.version }) : null,
+                            dateTime(snapshot.createdAt),
+                            snapshot.lineState === 'removed' ? t('product_configurator.quoteTab.lineRemovedHint', 'the line was deleted in Items') : null,
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </p>
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1">
+                          <Link
+                            href={snapshotHref(snapshot.id, { kind: 'quote', id: quoteId })}
+                            className="text-sm text-primary underline-offset-4 hover:underline"
+                          >
+                            {t('product_configurator.snapshot.pageTitle', 'Configuration details')}
+                          </Link>
+                          {snapshot.lineState === 'present' && canChangeLines && snapshot.lineId ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setEditing({ lineId: snapshot.lineId ?? '' })}
+                              data-testid={`quote-edit-line-${snapshot.id}`}
+                            >
+                              {t('product_configurator.quoteTab.editLine', 'Edit line details')}
+                            </Button>
+                          ) : null}
+                          {canChangeLines ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              disabled={busy}
+                              onClick={() => void openSession({ fromSnapshotId: snapshot.id })}
+                              data-testid={`quote-copy-line-${snapshot.id}`}
+                            >
+                              {snapshot.lineState === 'removed'
+                                ? t('product_configurator.quoteTab.configureAgain', 'Configure again')
+                                : t('product_configurator.quoteTab.addIdentical', 'Add another identical')}
+                            </Button>
+                          ) : null}
+                        </div>
                       </div>
-                      <p className="text-sm text-muted-foreground">{snapshot.summary}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {[
-                          snapshot.modelVersion.version !== null ? t('product_configurator.quoteTab.version', 'v{version}', { version: snapshot.modelVersion.version }) : null,
-                          dateTime(snapshot.createdAt),
-                          snapshot.lineState === 'removed' ? t('product_configurator.quoteTab.lineRemovedHint', 'the line was deleted in Items') : null,
-                        ]
-                          .filter(Boolean)
-                          .join(' · ')}
-                      </p>
-                      <Link href={snapshotHref(snapshot.id, quoteId)} className="inline-block text-sm text-primary underline-offset-4 hover:underline">
-                        {t('product_configurator.snapshot.pageTitle', 'Configuration details')}
-                      </Link>
+                      <div className="text-right">
+                        <p className="text-lg font-semibold tabular-nums">{formatCurrency(snapshot.netPrice, snapshot.currencyCode, locale) ?? snapshot.netPrice}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {t('product_configurator.quoteTab.netPriceNote', 'Configured net price, before quote discounts')}
+                        </p>
+                      </div>
                     </div>
-                    <div className="text-right">
-                      <p className="text-lg font-semibold tabular-nums">{formatCurrency(snapshot.netPrice, snapshot.currencyCode, locale) ?? snapshot.netPrice}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {t('product_configurator.quoteTab.netPriceNote', 'Configured net price, before quote discounts')}
-                      </p>
-                    </div>
-                  </div>
-                </li>
-              )
-            })}
-          </ul>
+                  </li>
+                )
+              })}
+            </ul>
+          </>
         )}
         {snapshotsTruncated ? (
           <p className="text-sm text-muted-foreground" role="status" data-testid="quote-configurations-truncated">
@@ -341,7 +418,7 @@ export function QuoteConfigurationsTab({ quoteId, currencyCode }: QuoteConfigura
               >
                 <div className="min-w-0">
                   <p className="text-sm font-medium">
-                    {session.modelVersion.modelTitle ?? t('product_configurator.configurator.header.untitled', 'Product configuration')}
+                    {sessionTitle(session)}
                     {session.modelVersion.version !== null ? (
                       <span className="text-muted-foreground"> · {t('product_configurator.quoteTab.version', 'v{version}', { version: session.modelVersion.version })}</span>
                     ) : null}
@@ -374,7 +451,23 @@ export function QuoteConfigurationsTab({ quoteId, currencyCode }: QuoteConfigura
           currencyCode={currencyCode}
           busy={busy}
           onCancel={() => setPickerOpen(false)}
-          onStart={(modelId) => void openSession(modelId)}
+          onStart={(modelId) => void openSession({ modelId })}
+        />
+      ) : null}
+      {editing ? (
+        <LineDetailsDialog
+          quoteId={quoteId}
+          lineId={editing.lineId}
+          currencyCode={currencyCode}
+          canReadTaxRates={hasFeature(chrome?.grantedFeatures, TAX_RATES_FEATURE)}
+          lockToken={lockToken}
+          onClose={() => setEditing(null)}
+          onSaved={(updatedAt) => {
+            setEditing(null)
+            if (updatedAt) setLockToken(updatedAt)
+            refreshQuote()
+          }}
+          onConflict={refreshQuote}
         />
       ) : null}
       {ConfirmDialogElement}

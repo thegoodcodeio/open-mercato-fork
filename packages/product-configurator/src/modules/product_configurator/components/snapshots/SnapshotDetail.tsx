@@ -4,15 +4,30 @@ import * as React from 'react'
 import { useSearchParams } from 'next/navigation'
 import { useLocale, useT } from '@open-mercato/shared/lib/i18n/context'
 import { useOrganizationScopeVersion } from '@open-mercato/shared/lib/frontend/useOrganizationScope'
+import { ApplyBreadcrumb } from '@open-mercato/ui/backend/AppShell'
 import { ErrorMessage, LoadingMessage, RecordNotFoundState } from '@open-mercato/ui/backend/detail'
 import { FormHeader } from '@open-mercato/ui/backend/forms'
+import { ForbiddenError } from '@open-mercato/ui/backend/utils/api'
 import { apiCall } from '@open-mercato/ui/backend/utils/apiCall'
 import { Button } from '@open-mercato/ui/primitives/button'
 import { StatusBadge } from '@open-mercato/ui/primitives/status-badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@open-mercato/ui/primitives/table'
 import { formatCurrency } from '@open-mercato/ui/utils/format'
-import { QUOTES_LIST_HREF, quoteHref } from '../configurator/session/sessionApi'
-import { snapshotLoadFromResponse, snapshotUrl, type SnapshotLoad, type SnapshotRow } from './snapshotsApi'
+import { ORDERS_LIST_HREF, QUOTES_LIST_HREF, orderHref, quoteHref } from '../configurator/session/sessionApi'
+import {
+  snapshotDocumentFromParams,
+  snapshotLoadFromResponse,
+  snapshotUrl,
+  type SnapshotDocument,
+  type SnapshotLoad,
+  type SnapshotRow,
+} from './snapshotsApi'
+
+/** The page metadata breadcrumb leads to quotes; opened from an order it leads to orders. */
+const ORDER_BREADCRUMB = [
+  { label: 'Orders', labelKey: 'sales.orders.list.title', href: ORDERS_LIST_HREF },
+  { label: 'Configuration details', labelKey: 'product_configurator.snapshot.pageTitle' },
+]
 
 function Section({ title, testId, children }: { title: string; testId: string; children: React.ReactNode }) {
   return (
@@ -41,7 +56,12 @@ export function SnapshotDetail({ snapshotId }: { snapshotId: string }) {
   const t = useT()
   const locale = useLocale()
   const searchParams = useSearchParams()
-  const quoteId = searchParams?.get('quoteId') || null
+  const documentKind = snapshotDocumentFromParams(searchParams)?.kind ?? null
+  const documentId = snapshotDocumentFromParams(searchParams)?.id ?? null
+  const document = React.useMemo<SnapshotDocument | null>(
+    () => (documentKind && documentId ? { kind: documentKind, id: documentId } : null),
+    [documentKind, documentId],
+  )
   const scopeVersion = useOrganizationScopeVersion()
   const [load, setLoad] = React.useState<SnapshotLoad | { status: 'loading' }>({ status: 'loading' })
   const [reloadToken, setReloadToken] = React.useState(0)
@@ -49,35 +69,47 @@ export function SnapshotDetail({ snapshotId }: { snapshotId: string }) {
   React.useEffect(() => {
     let cancelled = false
     setLoad({ status: 'loading' })
-    void apiCall<unknown>(snapshotUrl(snapshotId, quoteId), { cache: 'no-store' }).then(
+    void apiCall<unknown>(snapshotUrl(snapshotId, document), { cache: 'no-store' }).then(
       (call) => {
-        if (!cancelled) setLoad(snapshotLoadFromResponse(call.status, call.result, snapshotId, quoteId !== null))
+        if (!cancelled) setLoad(snapshotLoadFromResponse(call.status, call.result, snapshotId, document))
       },
-      () => {
-        if (!cancelled) setLoad({ status: 'error' })
+      (error: unknown) => {
+        if (!cancelled) setLoad({ status: error instanceof ForbiddenError ? 'forbidden' : 'error' })
       },
     )
     return () => {
       cancelled = true
     }
-  }, [snapshotId, quoteId, scopeVersion, reloadToken])
+  }, [snapshotId, document, scopeVersion, reloadToken])
 
-  const backHref = quoteId ? quoteHref(quoteId) : QUOTES_LIST_HREF
-  const backLabel = quoteId
-    ? t('product_configurator.configurator.backToQuote', 'Back to quote')
+  const fromOrder = document?.kind === 'order'
+  const backHref = document ? (fromOrder ? orderHref(document.id) : quoteHref(document.id)) : QUOTES_LIST_HREF
+  const backLabel = document
+    ? fromOrder
+      ? t('product_configurator.orderTab.backToOrder', 'Back to order')
+      : t('product_configurator.configurator.backToQuote', 'Back to quote')
     : t('product_configurator.configurator.goToQuotes', 'Go to quotes')
+  const breadcrumb = fromOrder ? <ApplyBreadcrumb breadcrumb={ORDER_BREADCRUMB} /> : null
+  const withBreadcrumb = (content: React.ReactNode) => (
+    <>
+      {breadcrumb}
+      {content}
+    </>
+  )
 
   if (load.status === 'loading') {
-    return <LoadingMessage label={t('product_configurator.snapshot.loading', 'Loading the configuration details...')} />
+    return withBreadcrumb(<LoadingMessage label={t('product_configurator.snapshot.loading', 'Loading the configuration details...')} />)
   }
   if (load.status === 'not_found') {
-    return <RecordNotFoundState label={t('product_configurator.snapshot.notFound', 'This configuration was not found.')} backHref={backHref} backLabel={backLabel} />
+    return withBreadcrumb(
+      <RecordNotFoundState label={t('product_configurator.snapshot.notFound', 'This configuration was not found.')} backHref={backHref} backLabel={backLabel} />,
+    )
   }
   if (load.status === 'forbidden') {
-    return <ErrorMessage label={t('product_configurator.snapshot.forbidden', 'You do not have access to this configuration.')} />
+    return withBreadcrumb(<ErrorMessage label={t('product_configurator.snapshot.forbidden', 'You do not have access to this configuration.')} />)
   }
   if (load.status === 'error') {
-    return (
+    return withBreadcrumb(
       <ErrorMessage
         label={t('product_configurator.snapshot.loadFailed', 'Could not load the configuration details.')}
         action={
@@ -85,7 +117,7 @@ export function SnapshotDetail({ snapshotId }: { snapshotId: string }) {
             {t('product_configurator.configurator.retry', 'Retry')}
           </Button>
         }
-      />
+      />,
     )
   }
 
@@ -109,13 +141,16 @@ export function SnapshotDetail({ snapshotId }: { snapshotId: string }) {
     snapshot.modelVersion.version !== null
       ? t('product_configurator.configurator.header.version', 'Model v{version}', { version: snapshot.modelVersion.version })
       : null,
-    t('product_configurator.snapshot.addedAt', 'added to the quote {date}', { date: addedAt }),
+    fromOrder
+      ? t('product_configurator.orderTab.addedAt', 'added {date}', { date: addedAt })
+      : t('product_configurator.snapshot.addedAt', 'added to the quote {date}', { date: addedAt }),
   ]
     .filter((part): part is string => Boolean(part))
     .join(' · ')
 
   return (
     <div className="space-y-4" data-testid="snapshot-detail">
+      {breadcrumb}
       <FormHeader
         mode="detail"
         backHref={backHref}
@@ -130,7 +165,7 @@ export function SnapshotDetail({ snapshotId }: { snapshotId: string }) {
             </StatusBadge>
           ) : (
             <StatusBadge variant="success" dot>
-              {t('product_configurator.snapshot.onQuote', 'On quote')}
+              {fromOrder ? t('product_configurator.snapshot.onOrder', 'On order') : t('product_configurator.snapshot.onQuote', 'On quote')}
             </StatusBadge>
           )
         }
@@ -198,10 +233,21 @@ export function SnapshotDetail({ snapshotId }: { snapshotId: string }) {
               {t('product_configurator.snapshot.netPrice', 'Configured net price ({currency})', { currency: snapshot.currencyCode })}
             </p>
             <p className="text-2xl font-semibold tabular-nums">{money(snapshot.netPrice)}</p>
-            <p className="text-xs text-muted-foreground">{t('product_configurator.snapshot.netPriceNote', 'Before quote discounts and tax.')}</p>
+            <p className="text-xs text-muted-foreground">
+              {fromOrder
+                ? t('product_configurator.snapshot.netPriceNoteOrder', 'Before discounts and tax.')
+                : t('product_configurator.snapshot.netPriceNote', 'Before quote discounts and tax.')}
+            </p>
           </section>
           {snapshot.summary ? (
-            <Section title={t('product_configurator.snapshot.sections.summary', 'Summary on the quote line')} testId="snapshot-summary">
+            <Section
+              title={
+                fromOrder
+                  ? t('product_configurator.snapshot.sections.summaryOrder', 'Summary on the order line')
+                  : t('product_configurator.snapshot.sections.summary', 'Summary on the quote line')
+              }
+              testId="snapshot-summary"
+            >
               <p className="text-sm">{snapshot.summary}</p>
             </Section>
           ) : null}

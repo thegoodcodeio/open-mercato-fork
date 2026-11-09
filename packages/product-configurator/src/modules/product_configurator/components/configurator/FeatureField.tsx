@@ -5,6 +5,7 @@ import { useT } from '@open-mercato/shared/lib/i18n/context'
 import { cn } from '@open-mercato/shared/lib/utils'
 import { SegmentedControl, SegmentedControlItem } from '@open-mercato/ui/primitives/segmented-control'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@open-mercato/ui/primitives/select'
+import { StatusBadge } from '@open-mercato/ui/primitives/status-badge'
 import { Switch } from '@open-mercato/ui/primitives/switch'
 import type { ConfigurationDefinition, Feature, SelectionValue } from '../../data/validators'
 import { NumberFeatureField } from './NumberFeatureField'
@@ -29,16 +30,31 @@ export type FeatureFieldProps = {
   resetGeneration: number
   onChange: (value: SelectionValue) => void
   onInvalidChange: (invalid: boolean) => void
+  /** Why the field changed when a copy was opened on a newer model version ("Reset to Navy: ..."). */
+  note?: string | null
 }
 
-export function FeatureField({ definition, feature, value, allowedValues, forcedBy, serverError, highlighted, resetGeneration, onChange, onInvalidChange }: FeatureFieldProps) {
+export function FeatureField({
+  definition,
+  feature,
+  value,
+  allowedValues,
+  forcedBy,
+  serverError,
+  highlighted,
+  resetGeneration,
+  onChange,
+  onInvalidChange,
+  note = null,
+}: FeatureFieldProps) {
   const t = useT()
   const id = featureFieldId(feature.key)
   const labelId = `${id}-label`
   const reasonId = `${id}-reason`
   const forcedId = `${id}-forced`
   const errorId = `${id}-error`
-  const describedBy = [forcedBy ? forcedId : null, serverError ? errorId : null].filter(Boolean).join(' ') || undefined
+  const noteId = `${id}-note`
+  const describedBy = [note ? noteId : null, forcedBy ? forcedId : null, serverError ? errorId : null].filter(Boolean).join(' ') || undefined
   const invalid = serverError ? true : undefined
   const current = value === null ? '' : String(value)
   const chosenRef = React.useRef(current)
@@ -146,7 +162,7 @@ export function FeatureField({ definition, feature, value, allowedValues, forced
           id={id}
           value={typeof value === 'number' ? value : null}
           disabled={forcedBy !== null}
-          describedBy={forcedBy ? forcedId : undefined}
+          describedBy={[note ? noteId : null, forcedBy ? forcedId : null].filter(Boolean).join(' ') || undefined}
           serverError={serverError}
           resetGeneration={resetGeneration}
           onCommit={onChange}
@@ -197,6 +213,12 @@ export function FeatureField({ definition, feature, value, allowedValues, forced
         {feature.unit && feature.type === 'number' ? `${feature.label} (${feature.unit})` : feature.label}
       </label>
       {renderControl()}
+      {note ? (
+        <div id={noteId} className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" data-testid={`configurator-migration-${feature.key}`}>
+          <StatusBadge variant="warning">{t('product_configurator.configurator.migration.badge', 'Reset')}</StatusBadge>
+          {note}
+        </div>
+      ) : null}
       {lockedReason ? (
         <p id={forcedId} className="text-xs text-muted-foreground">
           {lockedReason}

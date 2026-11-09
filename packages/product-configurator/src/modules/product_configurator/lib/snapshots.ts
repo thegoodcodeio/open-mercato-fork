@@ -15,6 +15,7 @@ export type SnapshotReadModel = {
   quoteId: string
   quoteLineId: string | null
   lineState: SnapshotLineState
+  lineId: string | null
   lineName: string | null
   modelTitle: string | null
   modelVersion: { id: string; version: number | null; hash: string }
@@ -30,7 +31,13 @@ export type SnapshotReadModel = {
   createdAt: string
 }
 
-export type SnapshotLineFacts = { state: SnapshotLineState; name: string | null }
+export type SnapshotLineFacts = { state: SnapshotLineState; id: string | null; name: string | null }
+
+export const REMOVED_LINE: SnapshotLineFacts = { state: 'removed', id: null, name: null }
+
+export function presentLine(line: StoredLine): SnapshotLineFacts {
+  return { state: 'present', id: line.id, name: line.name }
+}
 
 function readRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
@@ -125,6 +132,7 @@ export function buildSnapshotReadModel(input: {
     quoteId: snapshot.quoteId,
     quoteLineId: snapshot.quoteLineId ?? null,
     lineState: input.line.state,
+    lineId: input.line.id,
     lineName: input.line.name,
     modelTitle: input.modelTitle,
     modelVersion: { id: snapshot.modelVersionId, version: input.version, hash: snapshot.modelVersionHash },

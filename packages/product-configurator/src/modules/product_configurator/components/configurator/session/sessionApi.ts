@@ -79,6 +79,34 @@ export async function runGuardedCall<T>(run: (operation: () => Promise<T>) => Pr
 
 const selectionsSchema = sessionStateSchema.shape.selections
 
+const migrationValueSchema = z.union([z.string(), z.number(), z.boolean()])
+
+const migrationItemSchema = z.object({
+  featureKey: z.string(),
+  label: z.string(),
+  oldValue: migrationValueSchema,
+  oldDisplay: migrationValueSchema,
+  oldUnit: z.string().optional(),
+  reason: z.enum(['kept', 'feature_removed', 'option_removed', 'out_of_range', 'type_changed']),
+})
+
+/** How the choices of a copied configuration were mapped onto the version the copy opened on. */
+export const selectionMigrationSchema = z.object({
+  fromVersion: z.object({ id: z.string(), version: z.number().int() }),
+  toVersion: z.object({ id: z.string(), version: z.number().int() }),
+  kept: z.array(migrationItemSchema),
+  dropped: z.array(migrationItemSchema),
+  reset: z.array(migrationItemSchema),
+})
+
+export type SelectionMigration = z.infer<typeof selectionMigrationSchema>
+export type MigrationItem = z.infer<typeof migrationItemSchema>
+
+/** The copied choices that changed (dropped or reset); empty when nothing moved. */
+export function migrationChanges(migration: SelectionMigration | null): MigrationItem[] {
+  return migration ? [...migration.reset, ...migration.dropped] : []
+}
+
 const sessionDetailSchema = z.object({
   id: z.string(),
   status: z.enum(SESSION_STATUSES),
@@ -95,6 +123,10 @@ const sessionDetailSchema = z.object({
   }),
   selections: selectionsSchema,
   evaluation: workspaceEvaluationSchema.nullable().catch(null),
+  mode: z.enum(['new', 'duplicate']).catch('new').default('new'),
+  sourceSnapshotId: z.string().nullable().default(null),
+  sourceLineName: z.string().nullable().default(null),
+  migration: selectionMigrationSchema.nullable().catch(null).default(null),
 })
 
 export type SessionDetail = Omit<z.infer<typeof sessionDetailSchema>, 'modelVersion'> & {
@@ -152,12 +184,16 @@ export type FinaliseOutcome =
   | { kind: 'cannot_add'; code: CannotAddCode }
   | { kind: 'write_failed'; status: SessionStatus | null }
   | { kind: 'not_finalisable'; result: WorkspaceEvaluation | null }
+  | { kind: 'migration_unconfirmed'; migration: SelectionMigration | null }
   | { kind: 'evaluation'; failure: WorkspaceFailure }
   | { kind: 'transient' }
   | { kind: 'other'; message: string | null }
 
-/** A refused or unfinished "Add to quote" shown in the summary; `added` navigates away and `session_changed` opens the review. */
-export type PanelOutcome = Exclude<FinaliseOutcome, { kind: 'added' } | { kind: 'session_changed' }>
+/**
+ * A refused or unfinished "Add to quote" shown in the summary; `added` navigates away, `session_changed` opens the
+ * conflict review and `migration_unconfirmed` the copy review.
+ */
+export type PanelOutcome = Exclude<FinaliseOutcome, { kind: 'added' } | { kind: 'session_changed' } | { kind: 'migration_unconfirmed' }>
 
 const finaliseSuccessSchema = z.object({
   snapshotId: z.string(),
@@ -173,6 +209,7 @@ const finaliseErrorSchema = z.object({
   result: workspaceEvaluationSchema.optional().catch(undefined),
   session: sessionStateSchema.optional().catch(undefined),
   status: z.enum(SESSION_STATUSES).optional().catch(undefined),
+  migration: selectionMigrationSchema.optional().catch(undefined),
 })
 
 const EVALUATION_CODES = ['invalid_selection', 'price_missing', 'expression_error', 'fixed_point_not_reached', 'forced_value_invalid']
@@ -210,6 +247,8 @@ export function finaliseOutcomeFromResponse(status: number, payload: unknown): F
       return { kind: 'write_failed', status: body.status ?? null }
     case 'not_finalisable':
       return { kind: 'not_finalisable', result: body.result ?? null }
+    case 'migration_unconfirmed':
+      return { kind: 'migration_unconfirmed', migration: body.migration ?? null }
   }
   if (isCannotAddCode(body.code)) return { kind: 'cannot_add', code: body.code }
   if (body.code && EVALUATION_CODES.includes(body.code)) return { kind: 'evaluation', failure: failureFromResponse(status, payload) }

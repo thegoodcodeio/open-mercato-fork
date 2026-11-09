@@ -64,10 +64,36 @@ jest.mock('next/link', () => ({
 
 jest.mock('next/navigation', () => ({ useRouter: () => ({ push: pushMock }), useSearchParams: () => searchParams }))
 
+const totalsRefreshMock = jest.fn()
+jest.mock('@open-mercato/core/modules/sales/lib/frontend/documentTotalsEvents', () => ({
+  emitSalesDocumentTotalsRefresh: (...args: unknown[]) => totalsRefreshMock(...args),
+}))
+
+type LineDialogProps = {
+  lineId: string
+  lockToken: string | null
+  canReadTaxRates: boolean
+  onSaved: (updatedAt: string | null) => void
+  onClose: () => void
+}
+const lineDialogProps: LineDialogProps[] = []
+jest.mock('../LineDetailsDialog', () => ({
+  LineDetailsDialog: (props: LineDialogProps) => {
+    lineDialogProps.push(props)
+    return (
+      <div data-testid="line-details-dialog" data-line={props.lineId} data-lock={props.lockToken ?? ''}>
+        <button type="button" onClick={() => props.onSaved('2026-11-06T12:00:00.000Z')}>
+          stub-save
+        </button>
+      </div>
+    )
+  },
+}))
+
 import { QuoteConfigurationsTab } from '../QuoteConfigurationsTab'
 
 const QUOTE_ID = '33333333-3333-4333-8333-333333333333'
-const ALL_FEATURES = ['product_configurator.sessions.manage', 'product_configurator.models.view', 'product_configurator.snapshots.view', 'sales.quotes.view']
+const ALL_FEATURES = ['product_configurator.sessions.manage', 'product_configurator.models.view', 'product_configurator.snapshots.view', 'sales.quotes.view', 'sales.quotes.manage']
 
 function snapshot(id: string, overrides: Record<string, unknown> = {}) {
   return {
@@ -76,6 +102,7 @@ function snapshot(id: string, overrides: Record<string, unknown> = {}) {
     quoteId: QUOTE_ID,
     quoteLineId: `line-${id}`,
     lineState: 'present',
+    lineId: `line-${id}`,
     lineName: 'Pump (farm spec)',
     modelTitle: 'Pump',
     modelVersion: { id: 'v1', version: 3, hash: 'h' },
@@ -133,6 +160,8 @@ beforeEach(() => {
   runMutationMock.mockImplementation(async ({ operation }: RunMutationInput) => operation())
   searchParams = new URLSearchParams()
   grantedFeatures = ALL_FEATURES
+  totalsRefreshMock.mockReset()
+  lineDialogProps.length = 0
 })
 
 describe('QuoteConfigurationsTab', () => {
@@ -141,7 +170,7 @@ describe('QuoteConfigurationsTab', () => {
       snapshots: { items: [snapshot('a'), snapshot('b', { lineState: 'removed', lineName: null, modelTitle: 'Pump old' })] },
       models: { items: [model('m1', 'Pump')] },
     })
-    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" />)
+    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt={null} />)
     const present = await screen.findByTestId('quote-configured-line-a')
     expect(present.textContent).toContain('Pump (farm spec)')
     expect(present.textContent).toContain('On quote')
@@ -157,7 +186,7 @@ describe('QuoteConfigurationsTab', () => {
 
   it('opens the only fitting model straight away', async () => {
     respond({ models: { items: [model('m1', 'Pump')] } })
-    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" />)
+    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt={null} />)
     const configure = await screen.findByTestId('quote-configure-product')
     await act(async () => {
       fireEvent.click(configure)
@@ -169,7 +198,7 @@ describe('QuoteConfigurationsTab', () => {
 
   it('asks for a model when several fit and starts nothing before one is chosen', async () => {
     respond({ models: { items: [model('m1', 'Pump'), model('m2', 'Pump compact')] } })
-    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" />)
+    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt={null} />)
     const configure = await screen.findByTestId('quote-configure-product')
     await act(async () => {
       fireEvent.click(configure)
@@ -205,7 +234,7 @@ describe('QuoteConfigurationsTab', () => {
       models: { items: [model('m1', 'Pump')] },
       open: Promise.resolve({ ok: false, status: 409, result: { code: 'no_published_version' } }),
     })
-    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" />)
+    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt={null} />)
     const configure = await screen.findByTestId('quote-configure-product')
     await act(async () => {
       fireEvent.click(configure)
@@ -235,7 +264,7 @@ describe('QuoteConfigurationsTab', () => {
       },
       models: { items: [model('m1', 'Pump')] },
     })
-    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" />)
+    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt={null} />)
     const row = await screen.findByTestId('quote-session-s1')
     expect(row.textContent).toContain('Started by Anna K.')
     expect(within(row).getByText('Continue').getAttribute('href')).toBe('/backend/product_configurator/configure/s1')
@@ -252,7 +281,7 @@ describe('QuoteConfigurationsTab', () => {
   it('lists configurations in progress to a user who can manage sessions but not view models, without Configure', async () => {
     grantedFeatures = ['product_configurator.sessions.manage', 'product_configurator.snapshots.view', 'sales.quotes.view']
     respond({ sessions: { items: [sessionItem('s1')] } })
-    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" />)
+    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt={null} />)
     const row = await screen.findByTestId('quote-session-s1')
     expect(within(row).getByText('Continue').getAttribute('href')).toBe('/backend/product_configurator/configure/s1')
     expect(within(row).getByRole('button', { name: 'Discard' })).toBeTruthy()
@@ -264,7 +293,7 @@ describe('QuoteConfigurationsTab', () => {
   it('shows the text of a mutation guard that refused the discard, not a network error', async () => {
     respond({ sessions: { items: [sessionItem('s1')] }, models: { items: [model('m1', 'Pump')] } })
     runMutationMock.mockRejectedValueOnce(new Error('This quote is locked by Anna K.'))
-    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" />)
+    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt={null} />)
     const row = await screen.findByTestId('quote-session-s1')
     confirmMock.mockResolvedValueOnce(true)
     await act(async () => {
@@ -277,7 +306,7 @@ describe('QuoteConfigurationsTab', () => {
   it('highlights and focuses the line just added', async () => {
     searchParams = new URLSearchParams({ configuredLine: 'a' })
     respond({ snapshots: { items: [snapshot('a')] }, models: { items: [model('m1', 'Pump')] } })
-    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" />)
+    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt={null} />)
     const line = await screen.findByTestId('quote-configured-line-a')
     expect(line.getAttribute('data-highlighted')).toBe('true')
     await waitFor(() => expect(document.activeElement).toBe(line))
@@ -286,7 +315,7 @@ describe('QuoteConfigurationsTab', () => {
   it('shows only the configured lines to a user who cannot configure', async () => {
     grantedFeatures = ['product_configurator.snapshots.view', 'sales.quotes.view']
     respond({ snapshots: { items: [snapshot('a')] } })
-    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" />)
+    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt={null} />)
     await screen.findByTestId('quote-configured-line-a')
     expect(screen.queryByTestId('quote-configure-product')).toBeNull()
     expect(apiCallMock.mock.calls.map(([url]) => String(url)).every((url) => url.startsWith('/api/product_configurator/snapshots'))).toBe(true)
@@ -294,30 +323,121 @@ describe('QuoteConfigurationsTab', () => {
 
   it('says when the quote has more configurations than the list shows', async () => {
     respond({ snapshots: { items: [snapshot('a'), snapshot('b')], truncated: true } })
-    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" />)
+    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt={null} />)
     await screen.findByTestId('quote-configured-line-a')
     expect(screen.getByTestId('quote-configurations-truncated').textContent).toContain('Only the oldest 2 are listed here')
   })
 
   it('shows no truncation notice when every configuration is listed', async () => {
     respond({ snapshots: { items: [snapshot('a')], truncated: false } })
-    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" />)
+    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt={null} />)
     await screen.findByTestId('quote-configured-line-a')
     expect(screen.queryByTestId('quote-configurations-truncated')).toBeNull()
   })
 
   it('shows an error, not an empty list, when a list fails to load', async () => {
     apiCallMock.mockResolvedValue({ ok: false, status: 500, result: null })
-    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" />)
+    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt={null} />)
     expect((await screen.findByTestId('error-message')).textContent).toContain('Could not load the configurations')
     expect(screen.queryByTestId('empty-state')).toBeNull()
   })
 
   it('asks to select one organization, without Retry, while all organizations are selected', async () => {
     apiCallMock.mockResolvedValue({ ok: false, status: 400, result: { error: 'Select an organization', code: 'organization_scope_required' } })
-    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" />)
+    render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt={null} />)
     const message = await screen.findByTestId('error-message')
     expect(message.textContent).toBe('Select one organization in the top bar to configure a product.')
     expect(within(message).queryByRole('button')).toBeNull()
+  })
+
+  describe('configured lines', () => {
+    function postedBodies(): Array<Record<string, unknown>> {
+      return apiCallMock.mock.calls
+        .filter(([, init]) => (init as { method?: string } | undefined)?.method === 'POST')
+        .map(([, init]) => JSON.parse((init as { body: string }).body) as Record<string, unknown>)
+    }
+
+    it('adds another identical through a copy of the snapshot and opens it', async () => {
+      respond({ snapshots: { items: [snapshot('a')] }, open: Promise.resolve({ ok: true, status: 201, result: { sessionId: 'copy-session' } }) })
+      render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt={null} />)
+      const line = await screen.findByTestId('quote-configured-line-a')
+      expect(screen.getByTestId('quote-configurations-change-hint').textContent).toContain('remove the old line in Items')
+      await act(async () => {
+        fireEvent.click(within(line).getByRole('button', { name: 'Add another identical' }))
+      })
+      expect(postedBodies()).toEqual([{ quoteId: QUOTE_ID, fromSnapshotId: 'a' }])
+      expect(pushMock).toHaveBeenCalledWith('/backend/product_configurator/configure/copy-session')
+    })
+
+    it('offers Configure again, not Edit line details, for a removed line', async () => {
+      respond({ snapshots: { items: [snapshot('b', { lineState: 'removed', lineId: null })] } })
+      render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt={null} />)
+      const line = await screen.findByTestId('quote-configured-line-b')
+      expect(within(line).queryByRole('button', { name: 'Edit line details' })).toBeNull()
+      expect(screen.queryByTestId('quote-configurations-change-hint')).toBeNull()
+      await act(async () => {
+        fireEvent.click(within(line).getByRole('button', { name: 'Configure again' }))
+      })
+      expect(postedBodies()).toEqual([{ quoteId: QUOTE_ID, fromSnapshotId: 'b' }])
+    })
+
+    it('says when a configuration can no longer be copied', async () => {
+      respond({
+        snapshots: { items: [snapshot('a')] },
+        open: Promise.resolve({ ok: false, status: 409, result: { code: 'no_published_version', error: 'No published version' } }),
+      })
+      render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt={null} />)
+      const line = await screen.findByTestId('quote-configured-line-a')
+      await act(async () => {
+        fireEvent.click(within(line).getByRole('button', { name: 'Add another identical' }))
+      })
+      expect(screen.getByRole('status').textContent).toContain('This configuration cannot be copied')
+      expect(pushMock).not.toHaveBeenCalled()
+    })
+
+    it('edits line details with the quote lock token, then refreshes the quote totals and keeps the new token', async () => {
+      respond({ snapshots: { items: [snapshot('a')] } })
+      render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt="2026-11-06T10:00:00.000Z" />)
+      const line = await screen.findByTestId('quote-configured-line-a')
+      fireEvent.click(within(line).getByRole('button', { name: 'Edit line details' }))
+      const dialog = screen.getByTestId('line-details-dialog')
+      expect(dialog.getAttribute('data-line')).toBe('line-a')
+      expect(dialog.getAttribute('data-lock')).toBe('2026-11-06T10:00:00.000Z')
+      expect(lineDialogProps.at(-1)?.canReadTaxRates).toBe(false)
+      const loadsBefore = apiCallMock.mock.calls.length
+      await act(async () => {
+        fireEvent.click(within(dialog).getByText('stub-save'))
+      })
+      expect(screen.queryByTestId('line-details-dialog')).toBeNull()
+      expect(totalsRefreshMock).toHaveBeenCalledWith({ documentId: QUOTE_ID, kind: 'quote' })
+      await waitFor(() => expect(apiCallMock.mock.calls.length).toBeGreaterThan(loadsBefore))
+      fireEvent.click(within(await screen.findByTestId('quote-configured-line-a')).getByRole('button', { name: 'Edit line details' }))
+      expect(screen.getByTestId('line-details-dialog').getAttribute('data-lock')).toBe('2026-11-06T12:00:00.000Z')
+    })
+
+    it('lets the line dialog read tax rates only with the sales settings feature', async () => {
+      grantedFeatures = [...ALL_FEATURES, 'sales.settings.manage']
+      respond({ snapshots: { items: [snapshot('a')] } })
+      render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt={null} />)
+      fireEvent.click(within(await screen.findByTestId('quote-configured-line-a')).getByRole('button', { name: 'Edit line details' }))
+      expect(lineDialogProps.at(-1)?.canReadTaxRates).toBe(true)
+    })
+
+    it('offers no line edit and no copy without quote edit rights', async () => {
+      grantedFeatures = ALL_FEATURES.filter((feature) => feature !== 'sales.quotes.manage')
+      respond({ snapshots: { items: [snapshot('a'), snapshot('b', { lineState: 'removed', lineId: null })] } })
+      render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt={null} />)
+      const line = await screen.findByTestId('quote-configured-line-a')
+      expect(within(line).queryByRole('button', { name: 'Edit line details' })).toBeNull()
+      expect(within(line).queryByRole('button', { name: 'Add another identical' })).toBeNull()
+      expect(within(screen.getByTestId('quote-configured-line-b')).queryByRole('button', { name: 'Configure again' })).toBeNull()
+      expect(screen.queryByTestId('quote-configurations-change-hint')).toBeNull()
+    })
+
+    it('names a copy in progress after the line it copies', async () => {
+      respond({ snapshots: { items: [snapshot('a')] }, sessions: { items: [{ ...sessionItem('s1'), sourceSnapshotId: 'a' }] } })
+      render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt={null} />)
+      expect((await screen.findByTestId('quote-session-s1')).textContent).toContain('Copy of: Pump (farm spec)')
+    })
   })
 })

@@ -427,8 +427,12 @@ export type ModelPreviewInput = z.infer<typeof modelPreviewSchema>
 export const SESSION_STATUSES = ['open', 'finalising', 'finalised', 'cancelled'] as const
 export const SESSION_IN_PROGRESS_STATUSES = ['open', 'finalising'] as const
 export const SESSION_MODE_NEW = 'new'
+export const SESSION_MODE_DUPLICATE = 'duplicate'
 
-/** `mode` and `fromSnapshotId` are accepted as input so the command can refuse modes it does not support with `mode_not_supported`. */
+/**
+ * `mode` is free text so the command can refuse modes it does not support with `mode_not_supported`.
+ * `fromSnapshotId` without `mode` means `duplicate`.
+ */
 export const sessionOpenSchema = z.object({
   quoteId: z.string().uuid(),
   modelId: z.string().uuid().optional(),
@@ -470,17 +474,44 @@ export const sessionFinaliseSchema = z.object({
 
 export const SNAPSHOTS_MAX_IDS = 100
 
+/** One document per read: `quoteId`, `orderId` or `id` alone; `id` may be narrowed to an order with `orderId`. */
 export const snapshotsQuerySchema = z
   .object({
     id: z.string().uuid().optional(),
     quoteId: z.string().uuid().optional(),
+    orderId: z.string().uuid().optional(),
     ids: z
       .string()
       .optional()
       .transform((value) => Array.from(new Set((value ?? '').split(',').map((id) => id.trim()).filter((id) => id.length > 0))))
       .pipe(z.array(z.string().uuid()).max(SNAPSHOTS_MAX_IDS)),
   })
-  .refine((query) => Boolean(query.id) !== Boolean(query.quoteId), { message: 'id_or_quote_id_required' })
+  .refine((query) => [query.id && !query.orderId, query.quoteId, query.orderId].filter(Boolean).length === 1, {
+    message: 'one_document_required',
+  })
+
+export const lineDiscountSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('none') }),
+  z.object({ mode: z.literal('percent'), value: z.number().finite().gt(0).max(100) }),
+  z.object({ mode: z.literal('amount'), value: z.number().finite().gt(0).max(999_999_999_999) }),
+])
+
+/** Commercial fields of a configured quote line; its configured inputs are never editable here. */
+export const lineUpdateSchema = z
+  .object({
+    quoteId: z.string().uuid(),
+    lineId: z.string().uuid(),
+    name: z.string().trim().min(1).max(255).optional(),
+    comment: z.string().trim().max(2000).nullable().optional(),
+    discount: lineDiscountSchema.optional(),
+    taxRateId: z.string().uuid().nullable().optional(),
+  })
+  .refine((input) => input.name !== undefined || input.comment !== undefined || input.discount !== undefined || input.taxRateId !== undefined, {
+    message: 'nothing_to_update',
+  })
+
+export type LineDiscountInput = z.infer<typeof lineDiscountSchema>
+export type LineUpdateInput = z.infer<typeof lineUpdateSchema>
 
 export type SessionFinaliseInput = z.infer<typeof sessionFinaliseSchema>
 export type SnapshotsQuery = z.infer<typeof snapshotsQuerySchema>

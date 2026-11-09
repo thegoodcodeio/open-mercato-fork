@@ -1,5 +1,5 @@
 /** @jest-environment node */
-import { ConfigurationModel, ConfigurationModelVersion, ConfigurationSession } from '../../data/entities'
+import { ConfigurationModel, ConfigurationModelVersion, ConfigurationSession, ConfigurationSnapshot } from '../../data/entities'
 
 const TENANT_ID = '11111111-1111-4111-8111-111111111111'
 const ORG_ID = '22222222-2222-4222-8222-222222222222'
@@ -55,7 +55,7 @@ jest.mock('@open-mercato/shared/lib/encryption/find', () => ({
 }))
 
 jest.mock('@open-mercato/shared/lib/encryption/entityIds', () => ({
-  getEntityIds: () => ({ sales: { sales_quote: 'sales:sales_quote' }, auth: { user: 'auth:user' } }),
+  getEntityIds: () => ({ sales: { sales_quote: 'sales:sales_quote', sales_quote_line: 'sales:sales_quote_line' }, auth: { user: 'auth:user' } }),
 }))
 
 import { GET as getSessions, POST as openSession, metadata as sessionsMetadata } from '../sessions/route'
@@ -252,6 +252,8 @@ describe('GET /sessions', () => {
       mode: 'new',
       revision: 4,
       quoteId: QUOTE_ID,
+      sourceSnapshotId: null,
+      sourceLineName: null,
       quote: { id: QUOTE_ID, number: 'Q-7', customerName: 'Acme', currencyCode: 'EUR' },
       modelVersion: { id: VERSION_ID, version: 2, hash: 'h', modelId: MODEL_ID, modelTitle: 'Pump', definition: { schemaVersion: 1 } },
       selections: { size: 'l' },
@@ -262,6 +264,32 @@ describe('GET /sessions', () => {
       updatedAt: '2026-11-06T10:00:00.000Z',
     })
     expect(findOneWithDecryptionMock.mock.calls[0][2]).toEqual({ id: SESSION_ID, tenantId: TENANT_ID, organizationId: ORG_ID })
+  })
+
+  it('names the source line of a copy, and null once that line is gone', async () => {
+    const SNAPSHOT_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+    const LINE_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+    const migration = { fromVersion: { id: VERSION_ID, version: 1 }, toVersion: { id: VERSION_ID, version: 2 }, kept: [], dropped: [], reset: [] }
+    findOneWithDecryptionMock.mockImplementation(async (_em: unknown, entity: unknown) =>
+      entity === ConfigurationSnapshot
+        ? Object.assign(new ConfigurationSnapshot(), { id: SNAPSHOT_ID, quoteLineId: LINE_ID })
+        : Object.assign(storedSession(), { mode: 'duplicate', sourceSnapshotId: SNAPSHOT_ID, migration }),
+    )
+    findWithDecryptionMock.mockResolvedValue([])
+    const lines: Array<Record<string, unknown>> = [{ id: LINE_ID, quote_id: QUOTE_ID, name: 'Pump, blue' }]
+    queryMock.mockImplementation(async (entityId: string) => {
+      if (entityId === 'sales:sales_quote_line') return { items: lines }
+      if (entityId === 'auth:user') return { items: [] }
+      return { items: [{ id: QUOTE_ID, currency_code: 'EUR' }] }
+    })
+
+    const present = await getSessions(getRequest(`/sessions?id=${SESSION_ID}`))
+    await expect(present.json()).resolves.toMatchObject({ mode: 'duplicate', sourceSnapshotId: SNAPSHOT_ID, sourceLineName: 'Pump, blue', migration })
+    expect(findOneWithDecryptionMock.mock.calls[1][2]).toEqual({ id: SNAPSHOT_ID, tenantId: TENANT_ID, organizationId: ORG_ID })
+
+    lines.length = 0
+    const removed = await getSessions(getRequest(`/sessions?id=${SESSION_ID}`))
+    await expect(removed.json()).resolves.toMatchObject({ sourceSnapshotId: SNAPSHOT_ID, sourceLineName: null })
   })
 
   it('answers 404 for a session outside the selected organization', async () => {
@@ -277,7 +305,7 @@ describe('GET /sessions', () => {
     expect(response.status).toBe(200)
     const body = (await response.json()) as { items: Array<Record<string, unknown>> }
     expect(body.items).toHaveLength(1)
-    expect(body.items[0]).toMatchObject({ id: SESSION_ID, status: 'open', createdBy: { id: USER_ID, displayName: null } })
+    expect(body.items[0]).toMatchObject({ id: SESSION_ID, status: 'open', sourceSnapshotId: null, createdBy: { id: USER_ID, displayName: null } })
     expect(body.items[0]).not.toHaveProperty('evaluation')
     expect(findWithDecryptionMock.mock.calls[0][2]).toEqual({
       tenantId: TENANT_ID,
