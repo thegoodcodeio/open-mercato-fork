@@ -229,3 +229,81 @@ test.describe('TC-PCFG-065: a model manager without catalog settings picks price
     }
   })
 })
+
+test.describe('TC-PCFG-065: a model manager without currencies.view creates a model in the dialog', () => {
+  test.use({ actionTimeout: 15_000 })
+
+  test('types the currency, makes no forbidden request, shows no access toast and opens the studio', async ({ page, context, request }) => {
+    test.setTimeout(180_000)
+    const superadminToken = await getAuthToken(request, 'superadmin')
+    const adminToken = await getAuthToken(request, 'admin')
+    const scope = getTokenContext(adminToken)
+    const suffix = uniqueSuffix()
+    const productTitle = `QA PCFG 065 dialog ${suffix}`
+    const priceKindTitle = `QA PCFG 065 dialog kind ${suffix}`
+    let productId: string | null = null
+    let priceKindId: string | null = null
+    let manager: ScopedUser | null = null
+    let modelId: string | null = null
+
+    try {
+      productId = await createUnitProductFixture(request, adminToken, { title: productTitle, sku: `QA-PCFG-065-D-${suffix}` })
+      priceKindId = await createPriceKindFixture(request, adminToken, 'EUR', priceKindTitle)
+      manager = await createUserWithFeatures(
+        request,
+        superadminToken,
+        'models-admin',
+        ['product_configurator.models.view', ...MODEL_MANAGER_FEATURES],
+        scope,
+      )
+      const currencies = await apiRequest(request, 'GET', '/api/currencies/currencies/options?limit=1', { token: manager.token })
+      expect(currencies.status(), 'the manager has no currencies.view').toBe(403)
+
+      const baseUrl = process.env.BASE_URL || 'http://localhost:3000'
+      await acknowledgeGlobalNotices(page)
+      await context.addCookies([
+        { name: 'auth_token', value: manager.token, url: baseUrl, sameSite: 'Lax' },
+        { name: 'om_selected_tenant', value: scope.tenantId, url: baseUrl, sameSite: 'Lax' },
+        { name: 'om_selected_org', value: scope.organizationId, url: baseUrl, sameSite: 'Lax' },
+      ])
+      const forbidden: string[] = []
+      const currencyRequests: string[] = []
+      page.on('response', (response) => {
+        if (response.status() === 403) forbidden.push(`${response.request().method()} ${response.url()}`)
+      })
+      page.on('request', (sent) => {
+        if (sent.url().includes('/api/currencies/')) currencyRequests.push(sent.url())
+      })
+
+      await page.goto(MODELS_LIST_URL, { waitUntil: 'domcontentloaded' })
+      await page.getByRole('button', { name: 'Create model' }).first().click()
+      const dialog = page.getByRole('dialog')
+      await expect(dialog.getByText('Create configuration model')).toBeVisible()
+      await dialog.locator('[data-crud-field-id="title"] input').fill(`QA PCFG 065 dialog model ${suffix}`)
+      await dialog.locator('[data-crud-field-id="modelKey"] input').fill(`qa-pcfg-065-d-${suffix}`)
+      await page.getByRole('combobox', { name: 'Search products', exact: true }).fill(productTitle)
+      await page.getByRole('option', { name: new RegExp(`^${productTitle}`) }).first().click()
+      const currency = dialog.getByRole('combobox', { name: 'EUR', exact: true })
+      await currency.fill('EUR')
+      await currency.press('Enter')
+      await page.getByRole('combobox', { name: 'Select a price kind', exact: true }).fill(suffix)
+      await page.getByRole('option', { name: new RegExp(`^${priceKindTitle}`) }).first().click()
+      await dialog.getByRole('button', { name: 'Create model' }).click()
+
+      await expect(page.getByTestId('model-studio')).toBeVisible({ timeout: 30_000 })
+      const match = new URL(page.url()).pathname.match(/models\/([0-9a-f-]{36})$/)
+      modelId = match?.[1] ?? null
+      expect(modelId, 'the create dialog opens the studio of the new model').toBeTruthy()
+      const created = await readModel(request, adminToken, modelId ?? '')
+      expect(created.currencyCode).toBe('EUR')
+      await expect(page.getByText(/Access denied/)).toHaveCount(0)
+      expect(currencyRequests, 'no currency options are requested without currencies.view').toEqual([])
+      expect(forbidden, 'the dialog makes no request the manager may not make').toEqual([])
+    } finally {
+      await deleteModelIfExists(request, adminToken, modelId)
+      await deleteScopedUser(request, superadminToken, manager)
+      await deletePriceKindIfExists(request, adminToken, priceKindId)
+      await deleteCatalogProductIfExists(request, adminToken, productId)
+    }
+  })
+})

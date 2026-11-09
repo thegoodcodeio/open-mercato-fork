@@ -20,6 +20,7 @@ import { ModelPublishStateBadge } from './ModelPublishStateBadge'
 import { loadCurrencyOptions, productLookupSource } from './lookups'
 import {
   CATALOG_PRODUCTS_VIEW_FEATURE,
+  CURRENCIES_VIEW_FEATURE,
   MODEL_ENTITY_ID,
   MODELS_API_URL,
   MODELS_LIST_PAGE_SIZE,
@@ -51,6 +52,7 @@ export function ModelsTable() {
   const { payload: chrome } = useBackendChrome()
   const canManage = hasFeature(chrome?.grantedFeatures, MODELS_MANAGE_FEATURE)
   const canViewProducts = hasFeature(chrome?.grantedFeatures, CATALOG_PRODUCTS_VIEW_FEATURE)
+  const canViewCurrencies = hasFeature(chrome?.grantedFeatures, CURRENCIES_VIEW_FEATURE)
   const [page, setPage] = React.useState(1)
   const [search, setSearch] = React.useState('')
   const [filterValues, setFilterValues] = React.useState<FilterValues>({})
@@ -114,14 +116,20 @@ export function ModelsTable() {
           { value: 'false', label: t('product_configurator.models.list.filters.publishedNo', 'Not published') },
         ],
       },
-      {
-        id: 'currencyCode',
-        type: 'select',
-        label: t('product_configurator.models.list.filters.currency', 'Currency'),
-        loadOptions: loadCurrencyOptions,
-      },
+      canViewCurrencies
+        ? {
+            id: 'currencyCode',
+            type: 'select',
+            label: t('product_configurator.models.list.filters.currency', 'Currency'),
+            loadOptions: loadCurrencyOptions,
+          }
+        : {
+            id: 'currencyCode',
+            type: 'text',
+            label: t('product_configurator.models.list.filters.currency', 'Currency'),
+          },
     ],
-    [t],
+    [t, canViewCurrencies],
   )
 
   const columns = React.useMemo<ColumnDef<ModelListItem>[]>(

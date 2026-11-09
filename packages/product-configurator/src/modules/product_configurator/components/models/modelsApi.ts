@@ -8,6 +8,7 @@ export const MODELS_TABLE_ID = 'product_configurator.models'
 export const MODELS_LIST_PAGE_SIZE = 25
 export const MODELS_MANAGE_FEATURE = 'product_configurator.models.manage'
 export const CATALOG_PRODUCTS_VIEW_FEATURE = 'catalog.products.view'
+export const CURRENCIES_VIEW_FEATURE = 'currencies.view'
 
 export const MODELS_LIST_HREF = '/backend/product_configurator/models'
 

@@ -8,9 +8,11 @@ import { ModelCreateDialog, modelCreateFormSchema, type ModelCreateFormValues } 
 const createCrudMock = jest.fn()
 const flashMock = jest.fn()
 const loadPriceKindCurrencyMock = jest.fn()
+const loadCurrencyOptionsMock = jest.fn(async () => [])
+let grantedFeatures: string[] = ['product_configurator.models.manage', 'currencies.view']
 
 type CapturedFormProps = {
-  fields: Array<{ id: string; type: string; required?: boolean }>
+  fields: Array<{ id: string; type: string; required?: boolean; loadOptions?: unknown }>
   entityId?: string
   embedded?: boolean
   initialValues: ModelCreateFormValues
@@ -21,6 +23,10 @@ let crudFormProps: CapturedFormProps | null = null
 
 jest.mock('@open-mercato/shared/lib/i18n/context', () => ({
   useT: () => (key: string, fallback?: string) => fallback ?? key,
+}))
+
+jest.mock('@open-mercato/ui/backend/BackendChromeProvider', () => ({
+  useBackendChrome: () => ({ payload: { grantedFeatures } }),
 }))
 
 jest.mock('@open-mercato/ui/backend/FlashMessages', () => ({ flash: (...args: unknown[]) => flashMock(...args) }))
@@ -34,7 +40,7 @@ jest.mock('@open-mercato/ui/backend/inputs/LookupPickers', () => ({ LookupSingle
 jest.mock('../lookups', () => ({
   productLookupSource: { id: 'products', search: jest.fn(), resolve: jest.fn() },
   activePriceKindLookupSource: { id: 'price-kinds', search: jest.fn(), resolve: jest.fn() },
-  loadCurrencyOptions: jest.fn(async () => []),
+  loadCurrencyOptions: (...args: unknown[]) => loadCurrencyOptionsMock(...args),
   loadPriceKindCurrency: (...args: unknown[]) => loadPriceKindCurrencyMock(...args),
 }))
 
@@ -62,6 +68,8 @@ describe('ModelCreateDialog', () => {
     flashMock.mockReset()
     loadPriceKindCurrencyMock.mockReset()
     loadPriceKindCurrencyMock.mockResolvedValue(null)
+    loadCurrencyOptionsMock.mockClear()
+    grantedFeatures = ['product_configurator.models.manage', 'currencies.view']
     crudFormProps = null
   })
 
@@ -71,6 +79,23 @@ describe('ModelCreateDialog', () => {
     expect(crudFormProps?.entityId).toBeUndefined()
     expect(crudFormProps?.fields.map((field) => field.id)).toEqual(['title', 'modelKey', 'productId', 'currencyCode', 'priceKindId'])
     expect(crudFormProps?.fields.every((field) => field.required)).toBe(true)
+  })
+
+  it('offers currency suggestions only to users who can view currencies', async () => {
+    const { rerender } = render(<ModelCreateDialog open onOpenChange={jest.fn()} onCreated={jest.fn()} />)
+    const currencyField = () => crudFormProps?.fields.find((field) => field.id === 'currencyCode')
+    expect(typeof currencyField()?.loadOptions).toBe('function')
+
+    grantedFeatures = ['product_configurator.models.manage', 'catalog.products.view']
+    rerender(<ModelCreateDialog open onOpenChange={jest.fn()} onCreated={jest.fn()} />)
+    expect(currencyField()?.loadOptions).toBeUndefined()
+    expect(loadCurrencyOptionsMock).not.toHaveBeenCalled()
+
+    createCrudMock.mockResolvedValue({ ok: true, result: { id: 'model-9' } })
+    await crudFormProps?.onSubmit(validValues)
+    expect(createCrudMock).toHaveBeenCalledWith('product_configurator/models', expect.objectContaining({ currencyCode: 'EUR' }), expect.anything())
+    expect(flashMock).toHaveBeenCalledTimes(1)
+    expect(flashMock).toHaveBeenCalledWith('Model created', 'success')
   })
 
   it('validates the key pattern, the currency code and the picked ids', () => {

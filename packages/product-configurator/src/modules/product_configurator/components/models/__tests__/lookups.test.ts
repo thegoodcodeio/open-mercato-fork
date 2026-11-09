@@ -8,7 +8,8 @@ jest.mock('@open-mercato/ui/backend/utils/apiCall', () => ({
 
 jest.mock('@open-mercato/core/modules/catalog/components/lookupSources', () => ({ productLookupSource: {} }))
 
-import { activePriceKindLookupSource, loadPriceKindCurrency } from '../lookups'
+import { ForbiddenError } from '@open-mercato/ui/backend/utils/api'
+import { activePriceKindLookupSource, loadCurrencyOptions, loadPriceKindCurrency } from '../lookups'
 
 describe('activePriceKindLookupSource', () => {
   beforeEach(() => readApiResultOrThrowMock.mockReset())
@@ -41,5 +42,28 @@ describe('loadPriceKindCurrency', () => {
     await expect(loadPriceKindCurrency('pk-3')).resolves.toBeNull()
     apiCallMock.mockResolvedValue({ ok: false, result: null })
     await expect(loadPriceKindCurrency('pk-4')).resolves.toBeNull()
+  })
+})
+
+describe('loadCurrencyOptions', () => {
+  beforeEach(() => apiCallMock.mockReset())
+
+  it('maps currency options and yields none when the call fails or is forbidden', async () => {
+    apiCallMock.mockResolvedValue({ ok: true, result: { items: [{ value: 'EUR', label: 'Euro' }, { value: 'USD', label: 'USD' }] } })
+    await expect(loadCurrencyOptions(' eu ')).resolves.toEqual([
+      { value: 'EUR', label: 'EUR (Euro)' },
+      { value: 'USD', label: 'USD' },
+    ])
+    expect(apiCallMock).toHaveBeenCalledWith('/api/currencies/currencies/options?limit=50&search=eu')
+
+    apiCallMock.mockResolvedValue({ ok: false, result: null })
+    await expect(loadCurrencyOptions()).resolves.toEqual([])
+
+    apiCallMock.mockRejectedValue(new ForbiddenError('Forbidden', { requiredFeatures: ['currencies.view'] }))
+    await expect(loadCurrencyOptions()).resolves.toEqual([])
+
+    const failure = new Error('network down')
+    apiCallMock.mockRejectedValue(failure)
+    await expect(loadCurrencyOptions()).rejects.toBe(failure)
   })
 })

@@ -5,7 +5,8 @@ import {
   type LookupRemoteItem,
   type LookupSource,
 } from '@open-mercato/ui/backend/inputs/lookupSources'
-import { apiCall } from '@open-mercato/ui/backend/utils/apiCall'
+import { ForbiddenError } from '@open-mercato/ui/backend/utils/api'
+import { apiCall, type ApiCallResult } from '@open-mercato/ui/backend/utils/apiCall'
 
 export { productLookupSource } from '@open-mercato/core/modules/catalog/components/lookupSources'
 
@@ -37,13 +38,19 @@ export type CurrencyOption = { value: string; label: string }
 
 /**
  * The currencies module or its `currencies.view` feature may be missing; the dialog then accepts a typed ISO code
- * and the filter offers no options, so a failed call yields an empty list instead of an error.
+ * and the filter offers no options, so a failed or forbidden call yields an empty list instead of an error.
  */
 export async function loadCurrencyOptions(query?: string): Promise<CurrencyOption[]> {
   const params = new URLSearchParams({ limit: '50' })
   const search = query?.trim()
   if (search) params.set('search', search)
-  const call = await apiCall<{ items?: LookupRemoteItem[] }>(`${CURRENCY_OPTIONS_URL}?${params.toString()}`)
+  let call: ApiCallResult<{ items?: LookupRemoteItem[] }>
+  try {
+    call = await apiCall<{ items?: LookupRemoteItem[] }>(`${CURRENCY_OPTIONS_URL}?${params.toString()}`)
+  } catch (error) {
+    if (error instanceof ForbiddenError) return []
+    throw error
+  }
   if (!call.ok || !Array.isArray(call.result?.items)) return []
   const options: CurrencyOption[] = []
   for (const item of call.result.items) {

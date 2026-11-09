@@ -3,6 +3,8 @@
 import * as React from 'react'
 import { z } from 'zod'
 import { useT } from '@open-mercato/shared/lib/i18n/context'
+import { hasFeature } from '@open-mercato/shared/security/features'
+import { useBackendChrome } from '@open-mercato/ui/backend/BackendChromeProvider'
 import { CrudForm, type CrudField } from '@open-mercato/ui/backend/CrudForm'
 import { flash } from '@open-mercato/ui/backend/FlashMessages'
 import { LookupSinglePicker } from '@open-mercato/ui/backend/inputs/LookupPickers'
@@ -12,7 +14,7 @@ import { Button } from '@open-mercato/ui/primitives/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@open-mercato/ui/primitives/dialog'
 import { MODEL_KEY_PATTERN } from '../../data/validators'
 import { activePriceKindLookupSource, loadCurrencyOptions, loadPriceKindCurrency, productLookupSource } from './lookups'
-import { MODELS_API_PATH } from './modelsApi'
+import { CURRENCIES_VIEW_FEATURE, MODELS_API_PATH } from './modelsApi'
 
 const REQUIRED_MESSAGE = 'ui.forms.errors.required'
 
@@ -50,6 +52,8 @@ type ModelCreateDialogProps = {
 
 export function ModelCreateDialog({ open, onOpenChange, onCreated }: ModelCreateDialogProps) {
   const t = useT()
+  const { payload: chrome } = useBackendChrome()
+  const canLoadCurrencies = hasFeature(chrome?.grantedFeatures, CURRENCIES_VIEW_FEATURE)
 
   const fields = React.useMemo<CrudField[]>(
     () => [
@@ -101,7 +105,7 @@ export function ModelCreateDialog({ open, onOpenChange, onCreated }: ModelCreate
         placeholder: t('product_configurator.models.create.fields.currencyPlaceholder', 'EUR'),
         required: true,
         allowCustomValues: true,
-        loadOptions: loadCurrencyOptions,
+        loadOptions: canLoadCurrencies ? loadCurrencyOptions : undefined,
         layout: 'half',
       },
       {
@@ -125,7 +129,7 @@ export function ModelCreateDialog({ open, onOpenChange, onCreated }: ModelCreate
         ),
       },
     ],
-    [t],
+    [canLoadCurrencies, t],
   )
 
   const handleSubmit = React.useCallback(
