@@ -67,7 +67,7 @@ describe('migrateSelections', () => {
       dropped: [{ featureKey: 'lighting', label: 'Lighting', oldValue: true, oldDisplay: true, reason: 'feature_removed' }],
       reset: [
         { featureKey: 'color', label: 'Color', oldValue: 'red', oldDisplay: 'Signal red', reason: 'option_removed' },
-        { featureKey: 'width', label: 'Width', oldValue: 2500, oldDisplay: 2500, reason: 'out_of_range' },
+        { featureKey: 'width', label: 'Width', oldValue: 2500, oldDisplay: 2500, oldUnit: 'mm', reason: 'out_of_range' },
       ],
     })
   })
@@ -87,7 +87,7 @@ describe('migrateSelections', () => {
       to: { ref: TO, definition: definition([width({ step: 10 })]) },
     })
     expect(kept.selections).toEqual({ width: 1010 })
-    expect(kept.migration?.kept).toEqual([{ featureKey: 'width', label: 'Width', oldValue: 1010, oldDisplay: 1010, reason: 'kept' }])
+    expect(kept.migration?.kept).toEqual([{ featureKey: 'width', label: 'Width', oldValue: 1010, oldDisplay: 1010, oldUnit: 'mm', reason: 'kept' }])
     expect(kept.migration?.dropped.map((item) => item.featureKey)).toEqual(['lighting'])
   })
 })

@@ -423,13 +423,15 @@ describe('QuoteConfigurationsTab', () => {
       expect(lineDialogProps.at(-1)?.canReadTaxRates).toBe(true)
     })
 
-    it('offers no line edit without quote edit rights', async () => {
+    it('offers no line edit and no copy without quote edit rights', async () => {
       grantedFeatures = ALL_FEATURES.filter((feature) => feature !== 'sales.quotes.manage')
-      respond({ snapshots: { items: [snapshot('a')] } })
+      respond({ snapshots: { items: [snapshot('a'), snapshot('b', { lineState: 'removed', lineId: null })] } })
       render(<QuoteConfigurationsTab quoteId={QUOTE_ID} currencyCode="EUR" quoteUpdatedAt={null} />)
       const line = await screen.findByTestId('quote-configured-line-a')
       expect(within(line).queryByRole('button', { name: 'Edit line details' })).toBeNull()
-      expect(within(line).getByRole('button', { name: 'Add another identical' })).toBeTruthy()
+      expect(within(line).queryByRole('button', { name: 'Add another identical' })).toBeNull()
+      expect(within(screen.getByTestId('quote-configured-line-b')).queryByRole('button', { name: 'Configure again' })).toBeNull()
+      expect(screen.queryByTestId('quote-configurations-change-hint')).toBeNull()
     })
 
     it('names a copy in progress after the line it copies', async () => {

@@ -10,6 +10,8 @@ export type MigrationItem = {
   label: string
   oldValue: SelectionValue
   oldDisplay: SelectionValue
+  /** Unit of a copied number in the old version; absent when the value has none. */
+  oldUnit?: string
   reason: MigrationReason
 }
 
@@ -46,8 +48,9 @@ export function readIntent(value: unknown): Record<string, SelectionValue> {
   return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter((entry): entry is [string, SelectionValue] => isSelectionValue(entry[1])))
 }
 
-function displayOf(feature: Feature | undefined, value: SelectionValue): SelectionValue {
-  return feature?.options?.find((option) => option.value === String(value))?.label ?? value
+function displayOf(feature: Feature | undefined, value: SelectionValue): Pick<MigrationItem, 'oldDisplay' | 'oldUnit'> {
+  const oldDisplay = feature?.options?.find((option) => option.value === String(value))?.label ?? value
+  return typeof value === 'number' && feature?.unit ? { oldDisplay, oldUnit: feature.unit } : { oldDisplay }
 }
 
 /** The per-feature problems the target version has with the copied intent, as the strict evaluate would report them. */
@@ -87,22 +90,22 @@ export function migrateSelections(input: {
   for (const [featureKey, oldValue] of Object.entries(intent)) {
     const oldFeature = oldFeatures.get(featureKey)
     const newFeature = newFeatures.get(featureKey)
-    const oldDisplay = displayOf(oldFeature, oldValue)
+    const display = displayOf(oldFeature, oldValue)
     const issue = issues.get(featureKey)
     if (!newFeature) {
-      dropped.push({ featureKey, label: oldFeature?.label ?? featureKey, oldValue, oldDisplay, reason: 'feature_removed' })
+      dropped.push({ featureKey, label: oldFeature?.label ?? featureKey, oldValue, ...display, reason: 'feature_removed' })
       continue
     }
     if (oldFeature && oldFeature.type !== newFeature.type) {
-      reset.push({ featureKey, label: newFeature.label, oldValue, oldDisplay, reason: 'type_changed' })
+      reset.push({ featureKey, label: newFeature.label, oldValue, ...display, reason: 'type_changed' })
       continue
     }
     if (issue && issue !== 'unknown_feature') {
-      reset.push({ featureKey, label: newFeature.label, oldValue, oldDisplay, reason: RESET_REASONS[issue] })
+      reset.push({ featureKey, label: newFeature.label, oldValue, ...display, reason: RESET_REASONS[issue] })
       continue
     }
     selections[featureKey] = oldValue
-    kept.push({ featureKey, label: newFeature.label, oldValue, oldDisplay, reason: 'kept' })
+    kept.push({ featureKey, label: newFeature.label, oldValue, ...display, reason: 'kept' })
   }
 
   if (!dropped.length && !reset.length) return { selections, migration: null }

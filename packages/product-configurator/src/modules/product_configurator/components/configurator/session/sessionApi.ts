@@ -86,6 +86,7 @@ const migrationItemSchema = z.object({
   label: z.string(),
   oldValue: migrationValueSchema,
   oldDisplay: migrationValueSchema,
+  oldUnit: z.string().optional(),
   reason: z.enum(['kept', 'feature_removed', 'option_removed', 'out_of_range', 'type_changed']),
 })
 

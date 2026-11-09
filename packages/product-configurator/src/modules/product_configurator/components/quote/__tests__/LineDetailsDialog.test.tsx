@@ -141,6 +141,20 @@ describe('LineDetailsDialog', () => {
     expect(handlers.onSaved).toHaveBeenCalledWith('2026-11-06T11:00:00.000Z')
   })
 
+  it('clears the discount value when switching between percent and amount', async () => {
+    respond()
+    renderDialog()
+    await screen.findByDisplayValue('Pump (farm spec)')
+    fireEvent.click(screen.getByRole('radio', { name: 'Amount (EUR)' }))
+    const amount = screen.getByLabelText('Discount amount (EUR)') as HTMLInputElement
+    expect(amount.value).toBe('')
+    expect(screen.getByTestId('line-details-save').hasAttribute('disabled')).toBe(true)
+    fireEvent.change(amount, { target: { value: '20' } })
+    fireEvent.click(screen.getByRole('radio', { name: '%' }))
+    expect((screen.getByLabelText('Discount in percent') as HTMLInputElement).value).toBe('')
+    expect(screen.getByTestId('line-details-save').hasAttribute('disabled')).toBe(true)
+  })
+
   it('switches the discount off with None', async () => {
     respond()
     renderDialog()

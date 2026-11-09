@@ -268,7 +268,7 @@ export function LineDetailsDialog({ quoteId, lineId, currencyCode, canReadTaxRat
               value={form.discountMode}
               aria-labelledby={`${contextId}-discount`}
               onValueChange={(next) => {
-                if (isDiscountMode(next)) update({ discountMode: next, discountValue: next === 'none' ? '' : form.discountValue })
+                if (isDiscountMode(next) && next !== form.discountMode) update({ discountMode: next, discountValue: '' })
               }}
             >
               <SegmentedControlItem value="none">{t('product_configurator.lineDetails.discountNone', 'None')}</SegmentedControlItem>

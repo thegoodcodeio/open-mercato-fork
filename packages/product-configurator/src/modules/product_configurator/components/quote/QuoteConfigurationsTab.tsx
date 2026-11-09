@@ -108,7 +108,7 @@ export function QuoteConfigurationsTab({ quoteId, currencyCode, quoteUpdatedAt }
   const canManageSessions = hasFeature(chrome?.grantedFeatures, SESSIONS_MANAGE_FEATURE)
   const canOpenModels = hasFeature(chrome?.grantedFeatures, MODELS_VIEW_FEATURE)
   const canConfigure = canManageSessions && canOpenModels
-  const canEditLines = canManageSessions && hasFeature(chrome?.grantedFeatures, QUOTES_MANAGE_FEATURE)
+  const canChangeLines = canManageSessions && hasFeature(chrome?.grantedFeatures, QUOTES_MANAGE_FEATURE)
   const { confirm, ConfirmDialogElement } = useConfirmDialog()
   const contextId = `product_configurator.quote-tab:${quoteId}`
   const { runMutation, retryLastMutation } = useGuardedMutation<QuoteTabMutationContext>({
@@ -305,7 +305,7 @@ export function QuoteConfigurationsTab({ quoteId, currencyCode, quoteUpdatedAt }
           )
         ) : (
           <>
-            {canManageSessions && snapshots.some((snapshot) => snapshot.lineState === 'present') ? (
+            {canChangeLines && snapshots.some((snapshot) => snapshot.lineState === 'present') ? (
               <p className="text-sm text-muted-foreground" data-testid="quote-configurations-change-hint">
                 {t(
                   'product_configurator.quoteTab.changeHint',
@@ -356,7 +356,7 @@ export function QuoteConfigurationsTab({ quoteId, currencyCode, quoteUpdatedAt }
                           >
                             {t('product_configurator.snapshot.pageTitle', 'Configuration details')}
                           </Link>
-                          {snapshot.lineState === 'present' && canEditLines && snapshot.lineId ? (
+                          {snapshot.lineState === 'present' && canChangeLines && snapshot.lineId ? (
                             <Button
                               type="button"
                               variant="outline"
@@ -367,7 +367,7 @@ export function QuoteConfigurationsTab({ quoteId, currencyCode, quoteUpdatedAt }
                               {t('product_configurator.quoteTab.editLine', 'Edit line details')}
                             </Button>
                           ) : null}
-                          {canManageSessions ? (
+                          {canChangeLines ? (
                             <Button
                               type="button"
                               variant="outline"

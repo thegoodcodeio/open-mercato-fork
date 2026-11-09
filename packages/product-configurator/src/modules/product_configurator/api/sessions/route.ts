@@ -192,6 +192,7 @@ const migrationItemSchema = z.object({
   label: z.string(),
   oldValue: z.union([z.string(), z.number(), z.boolean()]),
   oldDisplay: z.union([z.string(), z.number(), z.boolean()]).describe('Option label in the old version for choices and colors'),
+  oldUnit: z.string().optional().describe('Unit of a copied number in the old version; absent when the value has none'),
   reason: z.enum(['kept', 'feature_removed', 'option_removed', 'out_of_range', 'type_changed']),
 })
 

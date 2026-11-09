@@ -4,11 +4,14 @@ import type { WorkspaceEvaluation } from '../evaluationSchema'
 import { formatSelectionValue } from '../workspaceModel'
 import type { MigrationItem, SelectionMigration } from './sessionApi'
 
-/** The copied value as the rep knew it: the old option label, or a formatted number or yes/no. */
+/** The copied value as the rep knew it: the old option label, a formatted number with its old unit, or yes/no. */
 export function oldValueText(item: MigrationItem, locale: string, t: TranslateFn): string {
   const value = item.oldDisplay
   if (typeof value === 'boolean') return value ? t('product_configurator.configurator.values.yes', 'Yes') : t('product_configurator.configurator.values.no', 'No')
-  if (typeof value === 'number') return new Intl.NumberFormat(locale).format(value)
+  if (typeof value === 'number') {
+    const text = new Intl.NumberFormat(locale).format(value)
+    return item.oldUnit ? `${text} ${item.oldUnit}` : text
+  }
   return value
 }
 
