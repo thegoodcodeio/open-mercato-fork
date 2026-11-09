@@ -117,10 +117,22 @@ async function attachLatestVersions(payload: { items?: ModelListItem[] }, ctx: C
   }
 }
 
-/** Lists only the selected organization (not its children), the same scope the commands write to. */
-export function buildModelListFilters(query: ModelListQuery, ctx: Pick<CrudCtx, 'selectedOrganizationId'>): Record<string, unknown> {
-  const filters: Record<string, unknown> = {}
-  if (ctx.selectedOrganizationId) filters.organization_id = { $eq: ctx.selectedOrganizationId }
+type ModelListCtx = Pick<CrudCtx, 'selectedOrganizationId' | 'organizationIds' | 'auth'>
+
+const NO_ROWS = { id: { $in: [] } }
+
+/**
+ * The route sets `omitAutomaticTenantOrgScope`, so these filters carry the whole tenant and organization scope
+ * and fail closed without one. That option also keeps `search` a plain `$ilike`: the default query path answers
+ * `$ilike` on an indexed entity through search tokens, which drop short and non-word parts of a key.
+ * Lists only the selected organization (not its children), the same scope the commands write to.
+ */
+export function buildModelListFilters(query: ModelListQuery, ctx: ModelListCtx): Record<string, unknown> {
+  const tenantId = ctx.auth?.tenantId
+  const organizationIds = ctx.selectedOrganizationId ? [ctx.selectedOrganizationId] : ctx.organizationIds
+  if (!tenantId || organizationIds?.length === 0) return { ...NO_ROWS }
+  const filters: Record<string, unknown> = { tenant_id: { $eq: tenantId } }
+  if (organizationIds) filters.organization_id = organizationIds.length === 1 ? { $eq: organizationIds[0] } : { $in: organizationIds }
   if (query.id) filters.id = { $eq: query.id }
   if (query.productId) filters.product_id = { $eq: query.productId }
   if (query.currencyCode) filters.currency_code = { $eq: query.currencyCode }
@@ -161,6 +173,7 @@ const crud = makeCrudRoute<unknown, unknown, ModelListQuery>({
     sortFieldMap: { title: 'title', modelKey: 'model_key', updatedAt: 'updated_at' },
     defaultSort: { field: 'updated_at', dir: 'desc' },
     disableListCache: true,
+    omitAutomaticTenantOrgScope: true,
     buildFilters: (query, ctx) => buildModelListFilters(query, ctx),
     transformItem: (row: ModelRow) => toListItem(row),
   },
@@ -179,7 +192,11 @@ const crud = makeCrudRoute<unknown, unknown, ModelListQuery>({
       commandId: 'product_configurator.models.update',
       schema: rawBodySchema,
       mapInput: ({ raw }) => parseBody(modelUpdateSchema, raw),
-      response: ({ result }) => ({ id: result?.id ?? null, updatedAt: result?.updatedAt ?? null }),
+      response: ({ result }) => ({
+        id: result?.id ?? null,
+        updatedAt: result?.updatedAt ?? null,
+        draftHash: result?.draftHash ?? null,
+      }),
     },
     delete: {
       commandId: 'product_configurator.models.delete',
@@ -242,7 +259,14 @@ export const openApi = createProductConfiguratorCrudOpenApi({
   },
   update: {
     schema: z.object({ id: z.string().uuid(), title: z.string().optional(), draftDefinition: opaqueDefinitionSchema.optional() }),
-    responseSchema: z.object({ id: z.string().uuid().nullable(), updatedAt: z.string().nullable() }),
+    responseSchema: z.object({
+      id: z.string().uuid().nullable(),
+      updatedAt: z.string().nullable(),
+      draftHash: z
+        .string()
+        .nullable()
+        .describe('Hash of the saved draft. Equals `latestVersion.hash` when the draft matches the latest published version.'),
+    }),
     description:
       'Saves the title and/or the draft definition. Send the optimistic-lock header with the last seen `updatedAt`. 400 `invalid_definition` when the draft is too large, too deeply nested or changes the model currency.',
   },

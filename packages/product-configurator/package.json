@@ -71,7 +71,8 @@
   },
   "dependencies": {
     "@open-mercato/core": "workspace:*",
-    "@open-mercato/ui": "workspace:*"
+    "@open-mercato/ui": "workspace:*",
+    "@xyflow/react": "^12.11.5"
   },
   "peerDependencies": {
     "@mikro-orm/postgresql": "^7.0.14",

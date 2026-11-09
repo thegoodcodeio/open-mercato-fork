@@ -130,11 +130,20 @@ export async function checkCatalog(input: CatalogCheckInput): Promise<Validation
 
   const priceKindId = definition.commercial.priceKindId
   const priceKinds = await catalog.resolvePriceKinds([priceKindId])
-  if (!priceKinds.has(priceKindId)) {
+  const priceKind = priceKinds.get(priceKindId)
+  const currencyCode = definition.commercial.currencyCode
+  if (!priceKind) {
     issues.push({
       check: 'price_kind',
       code: 'price_kind_missing',
       params: { priceKindId },
+      refs: [{ kind: 'priceKind', key: priceKindId }],
+    })
+  } else if (priceKind.currencyCode && priceKind.currencyCode !== currencyCode) {
+    issues.push({
+      check: 'price_kind',
+      code: 'price_kind_currency_mismatch',
+      params: { priceKindId, priceKindCurrency: priceKind.currencyCode, currencyCode },
       refs: [{ kind: 'priceKind', key: priceKindId }],
     })
   }

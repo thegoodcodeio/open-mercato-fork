@@ -14,6 +14,7 @@ const findAndCountWithDecryptionMock = jest.fn()
 const validateModelDraftMock = jest.fn()
 const commandExecuteMock = jest.fn()
 const resolveSkusMock = jest.fn()
+const queryMock = jest.fn()
 const em = { fork: () => em }
 
 const container = {
@@ -21,6 +22,7 @@ const container = {
     if (token === 'em') return em
     if (token === 'commandBus') return { execute: commandExecuteMock }
     if (token === 'catalogPriceRowService') return { resolveSkus: resolveSkusMock }
+    if (token === 'queryEngine') return { query: queryMock }
     return undefined
   },
 }
@@ -50,6 +52,10 @@ jest.mock('@open-mercato/shared/lib/encryption/find', () => ({
   findAndCountWithDecryption: (...args: unknown[]) => findAndCountWithDecryptionMock(...args),
 }))
 
+jest.mock('@open-mercato/shared/lib/encryption/entityIds', () => ({
+  getEntityIds: () => ({ catalog: { catalog_price_kind: 'catalog:catalog_price_kind' } }),
+}))
+
 jest.mock('../../lib/modelValidation', () => ({
   validateModelDraft: (...args: unknown[]) => validateModelDraftMock(...args),
 }))
@@ -57,8 +63,9 @@ jest.mock('../../lib/modelValidation', () => ({
 import { GET as getCatalogItems, metadata as catalogItemsMetadata } from '../catalog-items/route'
 import { POST as publish, metadata as publishMetadata } from '../models/publish/route'
 import { POST as validate, metadata as validateMetadata } from '../models/validate/route'
-import { buildModelListFilters } from '../models/route'
+import { PUT as putModel, buildModelListFilters } from '../models/route'
 import { GET as getVersions } from '../model-versions/route'
+import { GET as getPriceKinds, metadata as priceKindsMetadata } from '../price-kinds/route'
 
 function postRequest(path: string, body: unknown): Request {
   return new Request(`http://localhost/api/product_configurator${path}`, {
@@ -130,23 +137,159 @@ describe('GET /catalog-items', () => {
   })
 })
 
-describe('GET /models list filters', () => {
-  const query = { page: 1, pageSize: 25 }
+describe('GET /price-kinds', () => {
+  const PRICE_KIND_ID = '66666666-6666-4666-8666-666666666666'
+  const rows = [
+    { id: PRICE_KIND_ID, code: 'regular', title: 'Regular price', currency_code: 'EUR', is_active: true },
+    { id: '77777777-7777-4777-8777-777777777777', code: 'b2b-net', title: 'Wholesale', is_active: true },
+    { id: '88888888-8888-4888-8888-888888888888', code: 'promo', title: 'Spring sale', is_active: true },
+  ]
 
-  it('lists only the selected organization, not its child organizations', () => {
-    expect(buildModelListFilters(query, { selectedOrganizationId: ORG_ID })).toEqual({ organization_id: { $eq: ORG_ID } })
+  function pageResult(items: unknown[], total = items.length) {
+    return { items, total, page: 1, pageSize: 100 }
+  }
+
+  it('requires only the model management feature', () => {
+    expect(priceKindsMetadata.GET).toEqual({ requireAuth: true, requireFeatures: ['product_configurator.models.manage'] })
   })
 
-  it('keeps the scope filter next to the query filters', () => {
-    expect(buildModelListFilters({ ...query, id: MODEL_ID, search: 'pump' }, { selectedOrganizationId: ORG_ID })).toEqual({
+  it('reads the kinds of the organization and tenant-wide kinds through the query engine', async () => {
+    queryMock.mockResolvedValue(pageResult(rows))
+
+    const response = await getPriceKinds(getRequest('/price-kinds?isActive=true'))
+
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body.items).toHaveLength(3)
+    expect(body.items[0]).toEqual({ id: PRICE_KIND_ID, code: 'regular', title: 'Regular price', currencyCode: 'EUR', isActive: true })
+    expect(body.items[1]).toMatchObject({ code: 'b2b-net', currencyCode: null })
+    expect(queryMock).toHaveBeenCalledWith(
+      'catalog:catalog_price_kind',
+      expect.objectContaining({
+        tenantId: TENANT_ID,
+        organizationIds: [ORG_ID, ''],
+        filters: { is_active: { $eq: true } },
+      }),
+    )
+  })
+
+  it('matches the search text anywhere in the title or code, ignoring case', async () => {
+    queryMock.mockResolvedValue(pageResult(rows))
+
+    const byTitle = await getPriceKinds(getRequest('/price-kinds?search=SALE'))
+    const byCode = await getPriceKinds(getRequest('/price-kinds?search=net'))
+
+    expect((await byTitle.json()).items.map((item: { title: string }) => item.title)).toEqual(['Wholesale', 'Spring sale'])
+    expect((await byCode.json()).items.map((item: { code: string }) => item.code)).toEqual(['b2b-net'])
+    expect(queryMock.mock.calls[0][1].filters).toEqual({})
+  })
+
+  it('resolves kinds by id', async () => {
+    queryMock.mockResolvedValue(pageResult([rows[0]]))
+
+    const response = await getPriceKinds(getRequest(`/price-kinds?ids=${PRICE_KIND_ID}&pageSize=1`))
+
+    expect(response.status).toBe(200)
+    expect((await response.json()).items).toHaveLength(1)
+    expect(queryMock.mock.calls[0][1].filters).toEqual({ id: { $in: [PRICE_KIND_ID] } })
+  })
+
+  it('reads further pages before searching and limits the answer to pageSize', async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({
+      id: `99999999-9999-4999-8999-${String(index).padStart(12, '0')}`,
+      code: `kind-${index}`,
+      title: `Kind ${index}`,
+      is_active: true,
+    }))
+    queryMock
+      .mockResolvedValueOnce(pageResult(firstPage, 101))
+      .mockResolvedValueOnce(pageResult([rows[2]], 101))
+      .mockResolvedValueOnce(pageResult(firstPage, 101))
+      .mockResolvedValueOnce(pageResult([rows[2]], 101))
+
+    const response = await getPriceKinds(getRequest('/price-kinds?search=sale&pageSize=5'))
+    const all = await getPriceKinds(getRequest('/price-kinds?pageSize=5'))
+
+    expect((await response.json()).items.map((item: { code: string }) => item.code)).toEqual(['promo'])
+    expect(queryMock.mock.calls[1][1].page).toEqual({ page: 2, pageSize: 100 })
+    expect((await all.json()).items).toHaveLength(5)
+  })
+
+  it('rejects ids that are not uuids', async () => {
+    const response = await getPriceKinds(getRequest('/price-kinds?ids=nope'))
+
+    expect(response.status).toBe(400)
+    expect(queryMock).not.toHaveBeenCalled()
+  })
+
+  it('answers 400 organization_scope_required when all organizations are selected', async () => {
+    resolveOrganizationScopeMock.mockResolvedValue({ selectedId: null, filterIds: null, allowedIds: null, tenantId: TENANT_ID })
+
+    const response = await getPriceKinds(getRequest('/price-kinds'))
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({ code: 'organization_scope_required' })
+  })
+})
+
+describe('PUT /models', () => {
+  it('returns the saved draft hash next to the new lock token', async () => {
+    runRouteMutationGuardsMock.mockResolvedValue({ ok: true, runAfterSuccess: jest.fn(async () => undefined) })
+    const saved = { id: MODEL_ID, updatedAt: '2026-11-05T10:00:00.000Z', draftHash: 'draft-hash' }
+    commandExecuteMock.mockResolvedValue({ result: saved, logEntry: null })
+
+    const response = await putModel(
+      new Request('http://localhost/api/product_configurator/models', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: MODEL_ID, title: 'Pump XL' }),
+      }),
+    )
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual(saved)
+    expect(commandExecuteMock).toHaveBeenCalledWith(
+      'product_configurator.models.update',
+      expect.objectContaining({ input: expect.objectContaining({ id: MODEL_ID, title: 'Pump XL' }) }),
+    )
+  })
+})
+
+describe('GET /models list filters', () => {
+  const query = { page: 1, pageSize: 25 }
+  const auth = { sub: 'user-1', tenantId: TENANT_ID, orgId: ORG_ID }
+  const OTHER_ORG_ID = '66666666-6666-4666-8666-666666666666'
+  const ctx = (selectedOrganizationId: string | null, organizationIds: string[] | null = selectedOrganizationId ? [selectedOrganizationId] : null) =>
+    ({ selectedOrganizationId, organizationIds, auth }) as unknown as Parameters<typeof buildModelListFilters>[1]
+
+  it('scopes to the tenant and only the selected organization, not its child organizations', () => {
+    expect(buildModelListFilters(query, ctx(ORG_ID, [ORG_ID, OTHER_ORG_ID]))).toEqual({
+      tenant_id: { $eq: TENANT_ID },
       organization_id: { $eq: ORG_ID },
-      id: { $eq: MODEL_ID },
-      $or: [{ title: { $ilike: '%pump%' } }, { model_key: { $ilike: '%pump%' } }],
     })
   })
 
-  it('leaves the organization to the automatic scope when all organizations are selected', () => {
-    expect(buildModelListFilters(query, { selectedOrganizationId: null })).toEqual({})
+  it('searches title and key with an escaped plain contains match next to the other filters', () => {
+    expect(buildModelListFilters({ ...query, id: MODEL_ID, search: '50%_off' }, ctx(ORG_ID))).toEqual({
+      tenant_id: { $eq: TENANT_ID },
+      organization_id: { $eq: ORG_ID },
+      id: { $eq: MODEL_ID },
+      $or: [{ title: { $ilike: '%50\\%\\_off%' } }, { model_key: { $ilike: '%50\\%\\_off%' } }],
+    })
+  })
+
+  it('keeps every allowed organization when all organizations are selected, and the tenant only when unrestricted', () => {
+    expect(buildModelListFilters(query, ctx(null, [ORG_ID, OTHER_ORG_ID]))).toEqual({
+      tenant_id: { $eq: TENANT_ID },
+      organization_id: { $in: [ORG_ID, OTHER_ORG_ID] },
+    })
+    expect(buildModelListFilters(query, ctx(null, null))).toEqual({ tenant_id: { $eq: TENANT_ID } })
+  })
+
+  it('matches nothing without a tenant or with no allowed organization', () => {
+    expect(buildModelListFilters(query, ctx(null, []))).toEqual({ id: { $in: [] } })
+    const noTenant = { selectedOrganizationId: ORG_ID, organizationIds: [ORG_ID], auth: null } as unknown as Parameters<typeof buildModelListFilters>[1]
+    expect(buildModelListFilters(query, noTenant)).toEqual({ id: { $in: [] } })
   })
 })
 

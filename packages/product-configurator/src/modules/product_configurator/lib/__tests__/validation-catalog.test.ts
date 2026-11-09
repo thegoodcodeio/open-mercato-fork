@@ -58,6 +58,19 @@ describe('validateForPublication: catalog checks', () => {
     ])
   })
 
+  it('reports a price kind bound to another currency and accepts one without a currency', async () => {
+    const report = await validate(undefined, { priceKindCurrency: 'USD' })
+    expect(report.issues).toEqual([
+      {
+        check: 'price_kind',
+        code: 'price_kind_currency_mismatch',
+        params: { priceKindId: PRICE_KIND_ID, priceKindCurrency: 'USD', currencyCode: 'EUR' },
+        refs: [{ kind: 'priceKind', key: PRICE_KIND_ID }],
+      },
+    ])
+    expect(await validate(undefined, { priceKindCurrency: null })).toEqual({ ok: true, issues: [] })
+  })
+
   it('resolves SKUs in chunks of at most 500', async () => {
     const input = referenceInput()
     const rows = Array.from({ length: 600 }, (_, index) => ({ match: String(index + 1), value: `PART-${index}` }))

@@ -1,6 +1,7 @@
 import { indexDefinition } from '../evaluator/context'
 import { checkCatalog, type PublicationCatalogPort } from './catalogChecks'
 import {
+  checkActionValues,
   checkDefaults,
   checkDuplicateKeys,
   checkLookupCoverage,
@@ -32,6 +33,7 @@ export async function validateForPublication(input: PublicationInput): Promise<V
     ...checkFormulaCycles(parsed.definition),
     ...checkNumericExpressionReferences(index),
     ...checkDefaults(index),
+    ...checkActionValues(index),
     ...checkSurchargeBindings(index),
     ...checkPlaceholders(index),
     ...checkFixedPoint(index),

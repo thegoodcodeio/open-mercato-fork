@@ -48,11 +48,11 @@ export async function createUnitProductFixture(
   return expectId((await readJsonSafe<{ id?: string }>(response))?.id, 'Product create should return an id')
 }
 
-export async function createPriceKindFixture(request: APIRequestContext, token: string, currencyCode = 'EUR'): Promise<string> {
+export async function createPriceKindFixture(request: APIRequestContext, token: string, currencyCode = 'EUR', title?: string): Promise<string> {
   const suffix = uniqueSuffix()
   const response = await apiRequest(request, 'POST', '/api/catalog/price-kinds', {
     token,
-    data: { code: `qa_pcfg_${suffix}`, title: `QA PCFG ${suffix}`, currencyCode },
+    data: { code: `qa_pcfg_${suffix}`, title: title ?? `QA PCFG ${suffix}`, currencyCode },
   })
   expect(response.ok(), `Failed to create price kind fixture: ${response.status()}`).toBeTruthy()
   return expectId((await readJsonSafe<{ id?: string }>(response))?.id, 'Price kind create should return an id')

@@ -52,6 +52,15 @@ function brokenDefinition(input: { priceKindId: string; partSku: string; sharedS
         featureKeys: ['flag'],
         order: 1,
       },
+      {
+        id: 'too_high',
+        effect: 'force',
+        when: [{ kind: 'compare', featureKey: 'size', op: 'eq', value: 'l' }],
+        action: { kind: 'set', featureKey: 'height', value: 50 },
+        messageTemplate: '',
+        featureKeys: ['height'],
+        order: 2,
+      },
     ],
     formulas: [
       { key: 'loop_a', expr: { kind: 'formula', formulaKey: 'loop_b' } },
@@ -76,6 +85,7 @@ test.describe('TC-PCFG-002: publication checks report the right codes', () => {
     const productIds: string[] = []
     const modelIds: string[] = []
     let priceKindId: string | null = null
+    let usdPriceKindId: string | null = null
 
     try {
       const boundProductId = await createUnitProductFixture(request, token, { title: `QA PCFG 002 ${suffix}`, sku: `QA-PCFG-002-${suffix}` })
@@ -111,6 +121,7 @@ test.describe('TC-PCFG-002: publication checks report the right codes', () => {
         'fixed_point/fixed_point_not_reached',
         'bom_unit_mismatch/bom_unit_mismatch',
         'lookup_coverage/lookup_row_missing',
+        'action_value/action_value_invalid',
       ]) {
         expect(codes, `report should contain ${expected}`).toContain(expected)
       }
@@ -132,9 +143,18 @@ test.describe('TC-PCFG-002: publication checks report the right codes', () => {
       const limitReport = await readJsonSafe<Report>(limitResponse)
       expect(limitReport?.ok).toBe(false)
       expect(limitReport?.issues.map((issue) => `${issue.check}/${issue.code}`)).toContain('limits/limit_exceeded')
+
+      usdPriceKindId = await createPriceKindFixture(request, token, 'USD')
+      const otherCurrencyId = await createModelFixture(request, token, { productId: boundProductId, priceKindId: usdPriceKindId })
+      modelIds.push(otherCurrencyId)
+      const currencyResponse = await apiRequest(request, 'POST', VALIDATE_PATH, { token, data: { id: otherCurrencyId } })
+      expect(currencyResponse.status()).toBe(200)
+      const currencyReport = await readJsonSafe<Report>(currencyResponse)
+      expect(currencyReport?.issues.map((issue) => `${issue.check}/${issue.code}`)).toContain('price_kind/price_kind_currency_mismatch')
     } finally {
       for (const id of modelIds) await deleteModelIfExists(request, token, id)
       await deletePriceKindIfExists(request, token, priceKindId)
+      await deletePriceKindIfExists(request, token, usdPriceKindId)
       for (const id of productIds) await deleteCatalogProductIfExists(request, token, id)
     }
   })
