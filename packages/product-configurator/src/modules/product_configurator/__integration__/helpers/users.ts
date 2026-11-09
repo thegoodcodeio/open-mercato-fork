@@ -14,7 +14,11 @@ export type ScopedUser = { token: string; userId: string; roleId: string }
 
 const PASSWORD = 'StrongSecret123!'
 
-/** A user whose only grants are `features`, in the caller's home organization unless `scope` names another one. */
+/**
+ * A user whose only grants are `features`, in the caller's home organization unless `scope` names another one.
+ * When a later step fails, what was already created is deleted before the error is rethrown, because the
+ * caller never receives it to clean up.
+ */
 export async function createUserWithFeatures(
   request: APIRequestContext,
   superadminToken: string,
@@ -25,17 +29,24 @@ export async function createUserWithFeatures(
   const { organizationId, tenantId } = scope ?? getTokenContext(superadminToken)
   const suffix = uniqueSuffix()
   const roleId = await createRoleFixture(request, superadminToken, { name: `qa-pcfg-${label}-${suffix}`, tenantId })
-  await setRoleAclFeatures(request, superadminToken, { roleId, features, organizations: null })
-  const email = `qa-pcfg-${label}-${suffix}@example.com`
-  const userId = await createUserFixture(request, superadminToken, {
-    email,
-    password: PASSWORD,
-    organizationId,
-    roles: [roleId],
-    name: `QA PCFG ${label}`,
-  })
-  const token = await getAuthToken(request, email, PASSWORD)
-  return { token, userId, roleId }
+  let userId: string | null = null
+  try {
+    await setRoleAclFeatures(request, superadminToken, { roleId, features, organizations: null })
+    const email = `qa-pcfg-${label}-${suffix}@example.com`
+    userId = await createUserFixture(request, superadminToken, {
+      email,
+      password: PASSWORD,
+      organizationId,
+      roles: [roleId],
+      name: `QA PCFG ${label}`,
+    })
+    const token = await getAuthToken(request, email, PASSWORD)
+    return { token, userId, roleId }
+  } catch (error) {
+    if (userId) await deleteUserIfExists(request, superadminToken, userId).catch(() => undefined)
+    await deleteRoleIfExists(request, superadminToken, roleId).catch(() => undefined)
+    throw error
+  }
 }
 
 export async function deleteScopedUser(request: APIRequestContext, superadminToken: string, user: ScopedUser | null): Promise<void> {

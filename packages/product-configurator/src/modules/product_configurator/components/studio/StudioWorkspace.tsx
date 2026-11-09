@@ -229,6 +229,7 @@ export function StudioWorkspace({ initialDetail, reload }: StudioWorkspaceProps)
                   onChange={onChange}
                   referenceChanges={state.referenceChanges}
                   readOnly={readOnly}
+                  unsavedChanges={dirty || localDirty}
                   issues={issuesByTab[id] ?? []}
                   selectedKey={state.selectedKeys[id] ?? null}
                   onSelectKey={(key) => dispatch({ type: 'selectKey', tab: id, key })}
