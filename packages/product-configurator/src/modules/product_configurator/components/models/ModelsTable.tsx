@@ -41,7 +41,9 @@ function readPublishedFilter(values: FilterValues): ModelsListFilters['published
 }
 
 function readCurrencyFilter(values: FilterValues): string | null {
-  return typeof values.currencyCode === 'string' && /^[A-Z]{3}$/.test(values.currencyCode) ? values.currencyCode : null
+  if (typeof values.currencyCode !== 'string') return null
+  const currencyCode = values.currencyCode.trim().toUpperCase()
+  return /^[A-Z]{3}$/.test(currencyCode) ? currencyCode : null
 }
 
 export function ModelsTable() {

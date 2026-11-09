@@ -202,6 +202,14 @@ describe('ModelsTable', () => {
     )
   })
 
+  it('normalizes a typed lowercase currency filter instead of dropping it', async () => {
+    mockList([])
+    render(<ModelsTable />)
+    await waitFor(() => expect(apiCallMock).toHaveBeenCalledTimes(1))
+    act(() => tableProps?.onFiltersApply?.({ currencyCode: ' eur ' }))
+    await waitFor(() => expect(lastRequestedQuery().get('currencyCode')).toBe('EUR'))
+  })
+
   it('hides create actions without the manage feature', async () => {
     mockList([])
     render(<ModelsTable />)
